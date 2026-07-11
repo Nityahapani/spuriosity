@@ -30,6 +30,7 @@ import patsy
 
 from spuriosity._rng import RNGManager
 from spuriosity.ground_truth import GroundTruth
+from spuriosity.pathologies import StructuralBreak, validate_combo as _validate_combo
 
 _SUPPORTED_DISTS = ("normal", "uniform")
 
@@ -88,6 +89,7 @@ class PanelGenerator:
         self._variables: dict[str, _VariableSpec] = {}
         self._treatment: Optional[_TreatmentSpec] = None
         self._outcome: Optional[_OutcomeSpec] = None
+        self._pathologies: list = []
 
     # ------------------------------------------------------------------
     # Builder methods
@@ -205,6 +207,45 @@ class PanelGenerator:
         )
         return self
 
+    def add_structural_break(
+        self,
+        period: int,
+        target: str,
+        kind: str = "mean_shift",
+        magnitude: float = 0.0,
+        coefficient_target: Optional[str] = None,
+    ) -> "PanelGenerator":
+        """Inject a structural break (regime change) at `period`.
+
+        See `spuriosity.pathologies.StructuralBreak` for the semantics of
+        each `kind` ("mean_shift", "variance_shift", "coefficient_shift").
+        `target` should normally be the outcome's name; a warning-worthy
+        mismatch is not currently checked, since `target` is only used for
+        ground-truth bookkeeping.
+        """
+        if not (0 <= period < self.n_periods):
+            raise ValueError(f"period must be in [0, n_periods)=[0, {self.n_periods}), got {period}")
+        break_pathology = StructuralBreak(
+            period=period,
+            target=target,
+            kind=kind,  # type: ignore[arg-type]
+            magnitude=magnitude,
+            coefficient_target=coefficient_target,
+        )
+        self._pathologies.append(break_pathology)
+        return self
+
+    def validate_combo(self) -> list[str]:
+        """Check currently-added pathologies for likely conflicts.
+
+        Prints any warnings found and also returns them as a list. Never
+        raises — v1 policy is permissive by design (see docs/design_spec.md).
+        """
+        warnings_found = _validate_combo(self._pathologies)
+        for w in warnings_found:
+            print(f"[spuriosity warning] {w}")
+        return warnings_found
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
@@ -239,14 +280,17 @@ class PanelGenerator:
         result: np.ndarray = (row_entity_treated & active).astype(int)
         return result
 
-    def _compute_outcome_mean(self, data: pd.DataFrame) -> np.ndarray:
+    def _compute_outcome_mean(self, data: pd.DataFrame) -> tuple[np.ndarray, Optional[pd.DataFrame]]:
+        """Returns (mean_outcome, design_matrix_or_None). design_matrix is
+        only produced for the formula path (needed by coefficient_shift
+        structural breaks); it is None for the fn= path."""
         assert self._outcome is not None
         if self._outcome.fn is not None:
             kwargs = {v: data[v].to_numpy() for v in self._variables}
             if self._treatment is not None:
                 kwargs[self._treatment.name] = data[self._treatment.name].to_numpy()
             result = self._outcome.fn(**kwargs)
-            return np.asarray(result, dtype=float)
+            return np.asarray(result, dtype=float), None
 
         assert self._outcome.formula is not None
         assert self._outcome.coefficients is not None
@@ -255,7 +299,7 @@ class PanelGenerator:
             [self._outcome.coefficients.get(col, 0.0) for col in design.columns], dtype=float
         )
         outcome_mean: np.ndarray = design.to_numpy() @ coefs
-        return outcome_mean
+        return outcome_mean, design
 
     # ------------------------------------------------------------------
     # Generation
@@ -285,9 +329,24 @@ class PanelGenerator:
         if self._treatment is not None:
             df[self._treatment.name] = self._draw_treatment(n_rows, entity_ids, periods)
 
-        mean_outcome = self._compute_outcome_mean(df)
+        mean_outcome, design = self._compute_outcome_mean(df)
+
+        structural_breaks = [p for p in self._pathologies if isinstance(p, StructuralBreak)]
+        for brk in structural_breaks:
+            mean_outcome = brk.apply_to_mean(mean_outcome, periods, design, self._outcome.coefficients)
+
+        noise_std_per_row = np.full(n_rows, self._outcome.noise_std, dtype=float)
+        for brk in structural_breaks:
+            if brk.kind == "variance_shift":
+                shifted = brk.apply_to_noise_std(self._outcome.noise_std, periods)
+                # Compose multiplicatively if multiple variance shifts overlap.
+                factor = np.divide(
+                    shifted, self._outcome.noise_std, out=np.ones_like(shifted), where=self._outcome.noise_std != 0
+                )
+                noise_std_per_row = noise_std_per_row * factor
+
         noise_gen = self._rng_manager.child("outcome_noise")
-        noise = noise_gen.normal(loc=0.0, scale=self._outcome.noise_std, size=n_rows)
+        noise = noise_gen.normal(loc=0.0, scale=1.0, size=n_rows) * noise_std_per_row
         df[self._outcome.name] = mean_outcome + noise
 
         true_coefficients = dict(self._outcome.coefficients) if self._outcome.coefficients else {}
@@ -295,8 +354,13 @@ class PanelGenerator:
             true_coefficients.get(self._treatment.name) if self._treatment is not None else None
         )
 
+        break_points = []
+        for brk in structural_breaks:
+            break_points.extend(brk.ground_truth_contribution()["break_points"])
+
         truth = GroundTruth(
             true_coefficients=true_coefficients,
+            break_points=break_points,
             treatment_effect_ate=treatment_effect_ate,
             spuriosity_version=_get_spuriosity_version(),
             numpy_version=np.__version__,
