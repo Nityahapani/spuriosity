@@ -20,7 +20,7 @@ from typing import Literal
 import numpy as np
 import pandas as pd
 
-from spuriosity.ground_truth import BreakInfo
+from spuriosity.ground_truth import BreakInfo, SelectionInfo
 
 _STRUCTURAL_BREAK_KINDS = ("mean_shift", "variance_shift", "coefficient_shift")
 
@@ -243,16 +243,67 @@ class Confounder(Pathology):
 
 
 class SelectionBias(Pathology):
-    """Applies non-random sample selection according to a boolean rule,
-    evaluated via a constrained pandas.eval (see CONTRIBUTING.md).
-    Implemented in a subsequent commit."""
+    """Applies non-random sample selection: rows matching `rule` are dropped
+    with probability `drop_prob` (not deterministically -- this lets the
+    severity of selection be dialed in rather than being all-or-nothing).
+
+    `rule` is a boolean expression evaluated via `pandas.eval` against the
+    generated DataFrame's columns (including the outcome, so
+    outcome-dependent selection / survivorship bias can be modeled), using
+    an explicit, minimal namespace -- never the ambient globals/locals of
+    the calling code. See CONTRIBUTING.md for the full security stance.
+
+    Selection is applied after the full DataFrame (including the outcome)
+    has been generated, and results in rows being physically removed from
+    the output -- mirroring what a real dataset with non-random
+    missingness actually looks like, rather than exposing a "selected"
+    flag column that a naive pipeline could accidentally ignore.
+    """
 
     def __init__(self, rule: str, drop_prob: float) -> None:
+        if not (0.0 <= drop_prob <= 1.0):
+            raise ValueError(f"drop_prob must be in [0, 1], got {drop_prob}")
         self.rule = rule
         self.drop_prob = drop_prob
 
+    def compute_mask_to_drop(
+        self,
+        data: pd.DataFrame,
+        rng: np.random.Generator,
+    ) -> np.ndarray:
+        """Evaluate the rule against `data` and return a boolean array of
+        which rows to drop (True = drop).
+
+        Raises ValueError if `rule` does not evaluate to a boolean-typed
+        result (e.g. an arithmetic expression rather than a comparison),
+        since a non-boolean rule almost certainly indicates a mistake
+        rather than an intended selection mechanism.
+        """
+        local_dict = {col: data[col] for col in data.columns}
+        try:
+            matches = pd.eval(self.rule, local_dict=local_dict, global_dict={}, engine="python")
+        except Exception as e:
+            raise ValueError(
+                f"Failed to evaluate selection rule {self.rule!r}: {e}. Rules must be boolean "
+                "expressions over columns present in the generated DataFrame, e.g. 'x1 > 1.5'."
+            ) from e
+
+        matches_arr = np.asarray(matches)
+        if matches_arr.dtype != bool:
+            raise ValueError(
+                f"Selection rule {self.rule!r} did not evaluate to a boolean result "
+                f"(got dtype {matches_arr.dtype}); rules must be boolean expressions, "
+                "e.g. 'x1 > 1.5', not arithmetic expressions."
+            )
+
+        random_draw = rng.random(size=len(data))
+        drop_mask: np.ndarray = matches_arr & (random_draw < self.drop_prob)
+        return drop_mask
+
     def ground_truth_contribution(self) -> dict:
-        raise NotImplementedError
+        return {
+            "selection_mechanism": SelectionInfo(rule=self.rule, drop_prob=self.drop_prob),
+        }
 
 
 def validate_combo(pathologies: list[Pathology]) -> list[str]:

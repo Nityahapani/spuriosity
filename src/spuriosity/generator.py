@@ -31,7 +31,7 @@ import patsy
 
 from spuriosity._rng import RNGManager
 from spuriosity.ground_truth import GroundTruth
-from spuriosity.pathologies import Confounder, StructuralBreak, validate_combo as _validate_combo
+from spuriosity.pathologies import Confounder, SelectionBias, StructuralBreak, validate_combo as _validate_combo
 
 _SUPPORTED_DISTS = ("normal", "uniform")
 
@@ -263,6 +263,19 @@ class PanelGenerator:
         self._pathologies.append(confounder)
         return self
 
+    def add_selection_bias(self, rule: str, drop_prob: float) -> "PanelGenerator":
+        """Apply non-random sample selection: rows matching `rule` are
+        dropped with probability `drop_prob`.
+
+        See `spuriosity.pathologies.SelectionBias` for the rule evaluation
+        mechanism (a constrained `pandas.eval`, see CONTRIBUTING.md) and
+        the security stance around it. `rule` may reference any column
+        present in the generated DataFrame, including the outcome, so
+        outcome-dependent selection (survivorship bias) can be modeled.
+        """
+        self._pathologies.append(SelectionBias(rule=rule, drop_prob=drop_prob))
+        return self
+
     def validate_combo(self) -> list[str]:
         """Check currently-added pathologies for likely conflicts.
 
@@ -403,6 +416,21 @@ class PanelGenerator:
         noise = noise_gen.normal(loc=0.0, scale=1.0, size=n_rows) * noise_std_per_row
         df[self._outcome.name] = mean_outcome + noise
 
+        selection_biases = [p for p in self._pathologies if isinstance(p, SelectionBias)]
+        for i, sel in enumerate(selection_biases):
+            sel_gen = self._rng_manager.child(f"selection_bias:{i}:{sel.rule}")
+            drop_mask = sel.compute_mask_to_drop(df, sel_gen)
+            df = df[~drop_mask].reset_index(drop=True)
+
+        if len(selection_biases) > 1:
+            warnings.warn(
+                f"{len(selection_biases)} selection_bias pathologies were added; all are applied "
+                "sequentially to the generated data, but only the first is recorded in "
+                "GroundTruth.selection_mechanism (v1 supports a single selection mechanism in "
+                "ground truth bookkeeping).",
+                stacklevel=2,
+            )
+
         true_coefficients = dict(self._outcome.coefficients) if self._outcome.coefficients else {}
         treatment_effect_ate = (
             true_coefficients.get(self._treatment.name) if self._treatment is not None else None
@@ -416,10 +444,15 @@ class PanelGenerator:
         for conf in confounders:
             confounding_strength.update(conf.ground_truth_contribution()["confounding_strength"])
 
+        selection_mechanism = None
+        if selection_biases:
+            selection_mechanism = selection_biases[0].ground_truth_contribution()["selection_mechanism"]
+
         truth = GroundTruth(
             true_coefficients=true_coefficients,
             break_points=break_points,
             confounding_strength=confounding_strength,
+            selection_mechanism=selection_mechanism,
             treatment_effect_ate=treatment_effect_ate,
             spuriosity_version=_get_spuriosity_version(),
             numpy_version=np.__version__,
