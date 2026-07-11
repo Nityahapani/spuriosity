@@ -21,6 +21,7 @@ See docs/design_spec.md for the full API design rationale.
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 from typing import Callable, Literal, Optional
 
@@ -30,7 +31,7 @@ import patsy
 
 from spuriosity._rng import RNGManager
 from spuriosity.ground_truth import GroundTruth
-from spuriosity.pathologies import StructuralBreak, validate_combo as _validate_combo
+from spuriosity.pathologies import Confounder, StructuralBreak, validate_combo as _validate_combo
 
 _SUPPORTED_DISTS = ("normal", "uniform")
 
@@ -235,6 +236,33 @@ class PanelGenerator:
         self._pathologies.append(break_pathology)
         return self
 
+    def add_confounder(
+        self,
+        feature: str,
+        outcome: str,
+        strength: float,
+        observed: bool = False,
+    ) -> "PanelGenerator":
+        """Inject a latent confounder `U` that causally affects both
+        `feature` and `outcome`, inducing omitted-variable bias in a naive
+        regression that omits `U`.
+
+        See `spuriosity.pathologies.Confounder` for the exact mechanism and
+        the closed-form predicted bias formula.
+
+        `feature` must already be declared via `add_variable` or
+        `add_treatment` -- the confounder modifies an existing column, it
+        does not create one. This is checked at `generate()` time (once all
+        builder calls are known), not here, so `add_confounder` may be
+        called before or after the corresponding `add_variable` call.
+
+        If `observed=True`, `U` is exposed as a visible column named
+        `f"_confounder_{feature}"` in the generated DataFrame.
+        """
+        confounder = Confounder(feature=feature, outcome=outcome, strength=strength, observed=observed)
+        self._pathologies.append(confounder)
+        return self
+
     def validate_combo(self) -> list[str]:
         """Check currently-added pathologies for likely conflicts.
 
@@ -329,7 +357,33 @@ class PanelGenerator:
         if self._treatment is not None:
             df[self._treatment.name] = self._draw_treatment(n_rows, entity_ids, periods)
 
+        confounders = [p for p in self._pathologies if isinstance(p, Confounder)]
+        confounder_outcome_contribution = np.zeros(n_rows, dtype=float)
+        for conf in confounders:
+            if conf.feature not in df.columns:
+                raise ValueError(
+                    f"Confounder targets feature {conf.feature!r}, which is not a declared "
+                    f"variable or treatment on this PanelGenerator."
+                )
+            if self._treatment is not None and conf.feature == self._treatment.name:
+                warnings.warn(
+                    f"Confounder targets the treatment column {conf.feature!r}. This will turn "
+                    "it into a continuous variable (no longer strictly 0/1), which may silently "
+                    "break estimators that assume a binary treatment. See "
+                    "spuriosity.pathologies.Confounder docstring for details.",
+                    stacklevel=2,
+                )
+            gen = self._rng_manager.child(f"confounder:{conf.feature}")
+            new_feature, contribution, u = conf.draw_and_apply(
+                df[conf.feature].to_numpy(), confounder_outcome_contribution, gen
+            )
+            df[conf.feature] = new_feature
+            confounder_outcome_contribution = contribution
+            if conf.observed:
+                df[f"_confounder_{conf.feature}"] = u
+
         mean_outcome, design = self._compute_outcome_mean(df)
+        mean_outcome = mean_outcome + confounder_outcome_contribution
 
         structural_breaks = [p for p in self._pathologies if isinstance(p, StructuralBreak)]
         for brk in structural_breaks:
@@ -358,9 +412,14 @@ class PanelGenerator:
         for brk in structural_breaks:
             break_points.extend(brk.ground_truth_contribution()["break_points"])
 
+        confounding_strength = {}
+        for conf in confounders:
+            confounding_strength.update(conf.ground_truth_contribution()["confounding_strength"])
+
         truth = GroundTruth(
             true_coefficients=true_coefficients,
             break_points=break_points,
+            confounding_strength=confounding_strength,
             treatment_effect_ate=treatment_effect_ate,
             spuriosity_version=_get_spuriosity_version(),
             numpy_version=np.__version__,

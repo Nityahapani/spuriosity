@@ -152,9 +152,52 @@ class StructuralBreak(Pathology):
 
 
 class Confounder(Pathology):
-    """Injects an unobserved (or observed) variable that confounds a feature
-    and an outcome, inducing a spurious relationship. Implemented in a
-    subsequent commit."""
+    """Injects a latent variable `U ~ N(0, 1)` that causally affects both
+    `feature` and `outcome`, inducing omitted-variable bias if `U` is not
+    controlled for.
+
+    Mechanism (added on top of whatever DGP `feature` and `outcome` already
+    have):
+
+        feature += strength * U
+        outcome_mean += strength * U
+
+    With `Var(U) = 1`, this induces a precise, checkable omitted-variable
+    bias in a naive regression of `outcome` on `feature` alone: the naive
+    coefficient on `feature` is biased upward by
+
+        bias = strength**2 / (1 + strength**2)
+
+    relative to the true coefficient. This holds because
+    `Cov(feature, U) = strength`, `Var(feature) = 1 + strength**2`
+    (assuming the feature's own base variance is 1; see note below), and
+    the standard omitted-variable-bias formula gives
+    `bias = Cov(feature, U) * Cov(U, outcome | feature) / Var(feature)`,
+    which simplifies to the expression above when `U` enters both `feature`
+    and `outcome` linearly with the same coefficient `strength`.
+
+    Note: the formula above assumes `feature`'s own (pre-confounding)
+    variance is 1 (the `add_variable` default for `dist="normal"`). If
+    `feature` was declared with a different `std`, the exact bias differs;
+    `ground_truth_contribution()` still reports `strength` so the true
+    mechanism is always available even if the closed-form bias needs
+    adjusting for a given `std`.
+
+    If `observed=True`, `U` is added to the generated DataFrame as a
+    visible column named `f"_confounder_{feature}"`, letting a pipeline
+    that actually controls for it recover the true coefficient. If
+    `observed=False` (default), `U` influences the data but is not
+    included in the output -- the realistic "hidden confounder" case.
+
+    Caution: if `feature` is a binary treatment indicator (declared via
+    `add_treatment`), confounding it additively turns it into a continuous
+    variable (no longer strictly 0/1), which silently breaks pipelines that
+    assume a binary treatment (e.g. DiD estimators, propensity models).
+    This is intentional -- it models continuous-dose confounding -- but is
+    usually not what you want when testing a binary-treatment estimator.
+    Prefer confounding a covariate rather than the treatment itself unless
+    you specifically want this effect.
+    """
 
     def __init__(self, feature: str, outcome: str, strength: float, observed: bool = False) -> None:
         self.feature = feature
@@ -162,8 +205,41 @@ class Confounder(Pathology):
         self.strength = strength
         self.observed = observed
 
+    def draw_and_apply(
+        self,
+        feature_values: np.ndarray,
+        outcome_mean: np.ndarray,
+        rng: np.random.Generator,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Draw U and apply it to both feature and outcome mean.
+
+        Returns (new_feature_values, new_outcome_mean, U) so the caller can
+        optionally expose U as a visible column when `observed=True`.
+        """
+        u: np.ndarray = np.asarray(rng.normal(loc=0.0, scale=1.0, size=feature_values.shape[0]))
+        new_feature: np.ndarray = feature_values + self.strength * u
+        new_outcome_mean: np.ndarray = outcome_mean + self.strength * u
+        return new_feature, new_outcome_mean, u
+
+    def predicted_naive_bias(self, feature_std: float = 1.0) -> float:
+        """Predicted bias in a naive OLS coefficient on `feature` (from a
+        regression of `outcome` on `feature` alone, omitting `U`), assuming
+        `feature`'s own pre-confounding variance is `feature_std ** 2`.
+
+        Derivation: with feature = feature_base + strength*U where
+        Var(feature_base) = feature_std**2 and Var(U) = 1,
+        Cov(feature, U) = strength, Var(feature) = feature_std**2 +
+        strength**2. Since outcome_mean also includes + strength*U,
+        Cov(U, outcome | feature-induced-part) contributes a bias term of
+        strength * Cov(feature, U) / Var(feature) = strength**2 /
+        (feature_std**2 + strength**2).
+        """
+        return self.strength**2 / (feature_std**2 + self.strength**2)
+
     def ground_truth_contribution(self) -> dict:
-        raise NotImplementedError
+        return {
+            "confounding_strength": {self.feature: self.strength},
+        }
 
 
 class SelectionBias(Pathology):
