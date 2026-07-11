@@ -66,8 +66,15 @@ packages = ["src/spuriosity"]
 line-length = 100
 target-version = "py310"
 
+# Note: python_version is left unset here rather than pinned to our 3.10
+# floor. Some numpy stub files use syntax only valid in newer Python
+# (e.g. 3.12 `type` statements), which trips mypy's parser when a lower
+# --python-version is forced, independent of anything in this package's own
+# code. mypy will default to checking against the interpreter it's run
+# with; CI should run it on the newest supported Python to get full
+# coverage, and this is a stub-compatibility issue to revisit as the numpy
+# stub / mypy ecosystem catches up, not a bug in spuriosity itself.
 [tool.mypy]
-python_version = "3.10"
 warn_return_any = true
 warn_unused_configs = true
 
