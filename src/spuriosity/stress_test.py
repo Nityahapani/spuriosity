@@ -313,6 +313,60 @@ class ComparisonReport:
         df.attrs["excluded_models"] = excluded
         return df
 
+    def summary(self) -> None:
+        """Print a human-readable summary of this comparison report.
+
+        Mirrors `StressTestReport.summary()` so the two report types have a
+        consistent ergonomics: per-model coefficient recovery + metrics
+        first, then the ranked table (best-to-worst by default_composite),
+        then any models excluded from the default-composite ranking because
+        none of their metrics were applicable under the current weights.
+        """
+        print(f"ComparisonReport: {len(self.reports)} models")
+        if not self.reports:
+            return
+
+        print("  Composite weights: " + ", ".join(
+            f"{k}={v}" for k, v in sorted(self.weights.items())
+        ))
+
+        print("\n  Per-model results:")
+        for model_name, report in self.reports.items():
+            print(f"    [{model_name}]")
+            if report.true_coefficients:
+                print("      Coefficient recovery:")
+                for key, true_val in report.true_coefficients.items():
+                    fitted_val = report.fitted_coefficients.get(key)
+                    if fitted_val is None:
+                        print(f"        {key}: true={true_val:.4f}, fitted=<missing>")
+                    else:
+                        print(
+                            f"        {key}: true={true_val:.4f}, "
+                            f"fitted={fitted_val:.4f}, error={fitted_val - true_val:+.4f}"
+                        )
+            if report.metrics:
+                print("      Metrics:")
+                for key, val in report.metrics.items():
+                    print(f"        {key}: {val:.4f}")
+            elif not report.true_coefficients:
+                print("      (no applicable metrics for this model)")
+
+        print("\n  Ranked table (best-to-worst by default_composite):")
+        try:
+            ranked = self.ranked_table()
+        except Exception as e:
+            print(f"    (could not rank: {type(e).__name__}: {e})")
+            return
+        if ranked.empty:
+            print("    (no models had any applicable metrics under the current weights)")
+        else:
+            # Truncate long model names + cap float precision for terminal readability
+            with pd.option_context("display.max_colwidth", 30, "display.precision", 4):
+                print(ranked.to_string(index=False))
+        excluded = ranked.attrs.get("excluded_models", []) if not ranked.empty else []
+        if excluded:
+            print(f"  Excluded from default_composite (no applicable metrics): {excluded}")
+
     def _composite_score(self, report: StressTestReport) -> Optional[float]:
         applicable = {k: v for k, v in report.metrics.items() if k in self.weights}
         if not applicable:
