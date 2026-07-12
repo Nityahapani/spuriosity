@@ -156,3 +156,35 @@ spuriosity/
 - Multi-dimensional HTE modifiers
 - Polars output support
 - Cross-version reproducibility guarantees
+
+## v2 additions
+
+### Metrics registration API (`spuriosity.metrics`)
+
+v1 hard-coded its four component metrics (`coef_rmse`, `confounding_bias`,
+`break_detection_lag`, `cate_rmse`-as-an-unimplemented-slot) directly inside
+`StressTest.evaluate()`. v2 extracts this into a pluggable registry:
+
+- `MetricContext` bundles everything a metric function might need (truth,
+  fitted coefficients, raw fit result, data, fit_fn, fit_kwargs, period_col)
+  so metric signatures stay uniform regardless of complexity.
+- A metric function is `Callable[[MetricContext], float | dict[str, float] | None]`.
+  Returning `None` (or an empty dict) means "not applicable," following the
+  v1 convention of omitting inapplicable metrics rather than reporting a
+  placeholder 0.0/NaN.
+- A dict-returning metric produces multiple result keys, namespaced as
+  `f"{metric_name}:{key}"`, except a key matching the metric's own
+  registered name, which is stored bare. This is how the built-in
+  `confounding_bias` metric produces both a bare aggregate and
+  `confounding_bias:x1`-style per-feature keys from a single registered
+  function.
+- `MetricRegistry.copy()` supports starting from
+  `spuriosity.metrics.default_registry` (the four built-ins) and adding or
+  overriding metrics without mutating the shared default.
+- `StressTest(truth, metric_registry=...)` and
+  `compare_models(..., metric_registry=...)` both accept a custom registry;
+  omitting it uses `default_registry`.
+
+This closes the most-requested v1 gap (external users wanting to test
+their own metric against a spuriosity-generated DGP) without requiring
+users to fork or monkey-patch `StressTest`.
