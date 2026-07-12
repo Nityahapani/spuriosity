@@ -12,9 +12,9 @@ from spuriosity import reference
 from spuriosity.generator import PanelGenerator
 from spuriosity.ground_truth import BreakInfo, GroundTruth, SelectionInfo
 from spuriosity.hte import HTE
+from spuriosity.stress_test import ComparisonReport, StressTest, StressTestReport, compare_models
 
 # Public API surface (populated further as modules are implemented).
-# from spuriosity.stress_test import StressTest, compare_models
 # from spuriosity.viz import plot_recovery_report
 
 __all__ = [
@@ -24,4 +24,8 @@ __all__ = [
     "SelectionInfo",
     "HTE",
     "reference",
+    "StressTest",
+    "StressTestReport",
+    "compare_models",
+    "ComparisonReport",
 ]
