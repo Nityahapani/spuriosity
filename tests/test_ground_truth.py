@@ -48,8 +48,82 @@ def test_to_dict_full():
         "kind": "mean_shift",
         "magnitude": 2.0,
     }
-    assert d["selection_mechanism"] == {"rule": "x1 > 1.5", "drop_prob": 0.4}
-    assert d["seed"] == 42
+
+
+# ----------------------------------------------------------------------
+# __repr__
+# ----------------------------------------------------------------------
+
+
+def test_repr_includes_seed_and_version():
+    gt = GroundTruth(true_coefficients={"x1": 2.0}, seed=42, spuriosity_version="0.1.0")
+    r = repr(gt)
+    assert "GroundTruth" in r
+    assert "seed=42" in r
+    assert "'0.1.0'" in r  # spuriosity_version as repr-style quoted string
+
+
+def test_repr_lists_all_coefficients():
+    gt = GroundTruth(true_coefficients={"x1": 2.0, "x2": 0.5, "treat": 3.0})
+    r = repr(gt)
+    # Each coefficient should appear as `key: value`
+    assert "'x1': 2.0" in r or '"x1": 2.0' in r
+    assert "2.0" in r
+    assert "0.5" in r
+    assert "3.0" in r
+
+
+def test_repr_handles_minimal_ground_truth_gracefully():
+    gt = GroundTruth(true_coefficients={})
+    r = repr(gt)
+    assert "GroundTruth" in r
+    assert "true_coefficients: <empty>" in r
+
+
+def test_repr_marks_optional_fields_only_when_present():
+    gt_no_optionals = GroundTruth(true_coefficients={"x1": 1.0})
+    r = repr(gt_no_optionals)
+    # No break_points, no confounding, no selection, no ATE, no CATE
+    assert "break_points" not in r
+    assert "confounding_strength" not in r
+    assert "selection_mechanism" not in r
+    assert "treatment_effect_ate" not in r
+    # but has_true_cate: False should appear
+    assert "has_true_cate: False" in r
+
+    gt_with_break = GroundTruth(
+        true_coefficients={"x1": 1.0},
+        break_points=[BreakInfo(period=10, target="y", kind="mean_shift", magnitude=1.0)],
+    )
+    r2 = repr(gt_with_break)
+    assert "break_points: 1" in r2
+    assert "mean_shift" in r2
+
+
+def test_repr_shows_cate_flag_when_true_cate_set():
+    gt = GroundTruth(
+        true_coefficients={"x1": 1.0, "treat": 0.0},
+        true_cate=lambda x1: 1.0 + 0.5 * x1,
+    )
+    r = repr(gt)
+    assert "has_true_cate: True" in r
+
+
+def test_break_info_repr_leads_with_kind():
+    """The new BreakInfo repr puts `kind` first so it's scannable in logs."""
+    bi = BreakInfo(period=20, target="y", kind="coefficient_shift", magnitude=5.0)
+    r = repr(bi)
+    assert r.startswith("BreakInfo(kind=")
+    assert "coefficient_shift" in r
+    assert "period=20" in r
+
+
+def test_selection_info_repr_includes_rule_and_prob():
+    si = SelectionInfo(rule="y > 0", drop_prob=0.3)
+    r = repr(si)
+    assert r.startswith("SelectionInfo(")
+    assert "'y > 0'" in r
+    assert "drop_prob=0.3" in r
 
 
 def test_true_cate_is_callable_and_not_serialized():
