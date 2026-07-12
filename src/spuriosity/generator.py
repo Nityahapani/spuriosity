@@ -31,6 +31,7 @@ import patsy
 
 from spuriosity._rng import RNGManager
 from spuriosity.ground_truth import GroundTruth
+from spuriosity.hte import HTE
 from spuriosity.pathologies import Confounder, SelectionBias, StructuralBreak, validate_combo as _validate_combo
 
 _SUPPORTED_DISTS = ("normal", "uniform")
@@ -91,6 +92,7 @@ class PanelGenerator:
         self._treatment: Optional[_TreatmentSpec] = None
         self._outcome: Optional[_OutcomeSpec] = None
         self._pathologies: list = []
+        self._hte: Optional[HTE] = None
 
     # ------------------------------------------------------------------
     # Builder methods
@@ -206,6 +208,23 @@ class PanelGenerator:
         self._outcome = _OutcomeSpec(
             name=name, formula=formula, coefficients=coefficients, fn=fn, noise_std=noise_std
         )
+        return self
+
+    def add_hte(self, treatment: str, modifier: str, formula: str) -> "PanelGenerator":
+        """Make `treatment`'s effect on the outcome vary with `modifier`,
+        according to `formula` (a pandas.eval-evaluated expression in terms
+        of `modifier`, e.g. ``"3 + 1.5*x1"``).
+
+        Requires a treatment declared via `add_treatment` and an outcome
+        specified via `set_outcome(formula=...)` (HTE is not supported with
+        an `fn=`-specified outcome in v1, since it needs to isolate and
+        replace the treatment's linear term in the design matrix).
+
+        See `spuriosity.hte.HTE` for the exact mechanism: this *replaces*
+        the treatment's contribution to the outcome entirely, ignoring any
+        coefficient given for it in `set_outcome(coefficients=...)`.
+        """
+        self._hte = HTE(treatment=treatment, modifier=modifier, formula=formula)
         return self
 
     def add_structural_break(
@@ -398,6 +417,49 @@ class PanelGenerator:
         mean_outcome, design = self._compute_outcome_mean(df)
         mean_outcome = mean_outcome + confounder_outcome_contribution
 
+        true_cate_fn = None
+        if self._hte is not None:
+            if self._outcome.fn is not None:
+                raise ValueError(
+                    "add_hte() requires an outcome specified via set_outcome(formula=...); "
+                    "it is not supported with an fn=-specified outcome."
+                )
+            if self._treatment is None or self._hte.treatment != self._treatment.name:
+                raise ValueError(
+                    f"add_hte() targets treatment {self._hte.treatment!r}, but no treatment "
+                    f"with that name was declared via add_treatment()."
+                )
+            if self._hte.modifier not in df.columns:
+                raise ValueError(
+                    f"add_hte() modifier {self._hte.modifier!r} is not a declared variable, "
+                    f"treatment, or reserved column on this PanelGenerator."
+                )
+            assert design is not None
+            if self._hte.treatment not in design.columns:
+                raise ValueError(
+                    f"Treatment {self._hte.treatment!r} does not appear as a term in the outcome "
+                    f"formula {self._outcome.formula!r}; add_hte() needs the treatment to be an "
+                    "explicit additive term (e.g. include it in set_outcome(formula=...))."
+                )
+
+            fixed_treatment_coef = (self._outcome.coefficients or {}).get(self._hte.treatment, 0.0)
+            if fixed_treatment_coef != 0.0:
+                warnings.warn(
+                    f"add_hte() replaces the effect of treatment {self._hte.treatment!r} entirely; "
+                    f"the fixed coefficient {fixed_treatment_coef} supplied in "
+                    "set_outcome(coefficients=...) for this treatment is being ignored.",
+                    stacklevel=2,
+                )
+
+            treatment_col = design[self._hte.treatment].to_numpy()
+            # Remove the (possibly zero) fixed linear contribution patsy/coefficients
+            # would otherwise have added for the treatment term.
+            mean_outcome = mean_outcome - fixed_treatment_coef * treatment_col
+
+            per_row_effect = self._hte.evaluate_on_column(df[self._hte.modifier].to_numpy())
+            mean_outcome = mean_outcome + per_row_effect * treatment_col
+            true_cate_fn = self._hte.cate_fn()
+
         structural_breaks = [p for p in self._pathologies if isinstance(p, StructuralBreak)]
         for brk in structural_breaks:
             mean_outcome = brk.apply_to_mean(mean_outcome, periods, design, self._outcome.coefficients)
@@ -432,9 +494,13 @@ class PanelGenerator:
             )
 
         true_coefficients = dict(self._outcome.coefficients) if self._outcome.coefficients else {}
-        treatment_effect_ate = (
-            true_coefficients.get(self._treatment.name) if self._treatment is not None else None
-        )
+        treatment_effect_ate: Optional[float]
+        if self._hte is not None:
+            treatment_effect_ate = float(np.mean(per_row_effect))
+        else:
+            treatment_effect_ate = (
+                true_coefficients.get(self._treatment.name) if self._treatment is not None else None
+            )
 
         break_points = []
         for brk in structural_breaks:
@@ -452,6 +518,7 @@ class PanelGenerator:
             true_coefficients=true_coefficients,
             break_points=break_points,
             confounding_strength=confounding_strength,
+            true_cate=true_cate_fn,
             selection_mechanism=selection_mechanism,
             treatment_effect_ate=treatment_effect_ate,
             spuriosity_version=_get_spuriosity_version(),

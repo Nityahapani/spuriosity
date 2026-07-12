@@ -10,6 +10,7 @@ __version__ = "0.1.0"
 
 from spuriosity.generator import PanelGenerator
 from spuriosity.ground_truth import BreakInfo, GroundTruth, SelectionInfo
+from spuriosity.hte import HTE
 
 # Public API surface (populated further as modules are implemented).
 # from spuriosity.stress_test import StressTest, compare_models
@@ -21,4 +22,5 @@ __all__ = [
     "GroundTruth",
     "BreakInfo",
     "SelectionInfo",
+    "HTE",
 ]
