@@ -39,6 +39,7 @@ import numpy as np
 import pandas as pd
 
 from spuriosity.ground_truth import GroundTruth
+from spuriosity.metrics import MetricContext, MetricRegistry, default_registry
 
 _DEFAULT_COMPOSITE_WEIGHTS: dict[str, float] = {
     "coef_rmse": 1.0,
@@ -83,8 +84,16 @@ class StressTestReport:
 
 
 class StressTest:
-    def __init__(self, truth: GroundTruth) -> None:
+    def __init__(self, truth: GroundTruth, metric_registry: Optional[MetricRegistry] = None) -> None:
+        """`metric_registry` defaults to `spuriosity.metrics.default_registry`
+        (the four built-in metrics: coef_rmse, confounding_bias,
+        break_detection_lag, cate_rmse). Pass a custom registry -- e.g.
+        `default_registry.copy()` with additional metrics registered, or a
+        fresh `MetricRegistry()` for a from-scratch metric set -- to
+        customize which metrics get computed.
+        """
         self.truth = truth
+        self.metric_registry = metric_registry if metric_registry is not None else default_registry
 
     def evaluate(
         self,
@@ -95,48 +104,29 @@ class StressTest:
         model_name: str = "model",
         period_col: str = "period",
     ) -> StressTestReport:
-        """Fit `fit_fn` on `data` and score it against `self.truth`.
+        """Fit `fit_fn` on `data` and score it against `self.truth` using
+        every metric registered in `self.metric_registry`.
 
         `fit_kwargs` are passed through to `fit_fn(data, **fit_kwargs)`.
-        `predict_fn` is currently only used by the break-detection-lag
-        metric's rolling refits internally reuse `fit_fn` directly rather
-        than `predict_fn` (which is retained on the signature for API
-        symmetry with `spuriosity.reference` and for future metrics that
-        need row-level predictions).
+        `predict_fn` is retained on the signature for API symmetry with
+        `spuriosity.reference` and for future metrics that need row-level
+        predictions; no built-in metric currently calls it directly (they
+        re-run `fit_fn` on sub-windows instead, e.g. break_detection_lag).
         """
         fit_kwargs = fit_kwargs or {}
         fit_result = fit_fn(data, **fit_kwargs)
         fitted_coefficients = _extract_coefficients(fit_result)
 
-        metrics: dict[str, float] = {}
-
-        if self.truth.true_coefficients:
-            coef_rmse = _coefficient_rmse(fitted_coefficients, self.truth.true_coefficients)
-            if coef_rmse is not None:
-                metrics["coef_rmse"] = coef_rmse
-
-        if self.truth.confounding_strength:
-            for feature in self.truth.confounding_strength:
-                true_val = self.truth.true_coefficients.get(feature)
-                fitted_val = fitted_coefficients.get(feature)
-                if true_val is not None and fitted_val is not None:
-                    metrics[f"confounding_bias:{feature}"] = abs(fitted_val - true_val)
-            confounding_biases = [
-                v for k, v in metrics.items() if k.startswith("confounding_bias:")
-            ]
-            if confounding_biases:
-                metrics["confounding_bias"] = float(np.mean(confounding_biases))
-
-        if self.truth.break_points and fit_kwargs.get("formula") is not None:
-            lag = _break_detection_lag(
-                fit_fn=fit_fn,
-                data=data,
-                truth=self.truth,
-                fit_kwargs=fit_kwargs,
-                period_col=period_col,
-            )
-            if lag is not None:
-                metrics["break_detection_lag"] = lag
+        ctx = MetricContext(
+            truth=self.truth,
+            fitted_coefficients=fitted_coefficients,
+            fit_result=fit_result,
+            data=data,
+            fit_fn=fit_fn,
+            fit_kwargs=fit_kwargs,
+            period_col=period_col,
+        )
+        metrics = self.metric_registry.run_all(ctx)
 
         return StressTestReport(
             model_name=model_name,
@@ -157,107 +147,6 @@ def _extract_coefficients(fit_result: object) -> dict[str, float]:
     if coefficients is not None:
         return dict(coefficients)
     return {}
-
-
-def _coefficient_rmse(
-    fitted: dict[str, float], true: dict[str, float]
-) -> Optional[float]:
-    """RMSE over keys present in both `fitted` and `true`. Returns None if
-    there is no overlap (rather than silently computing RMSE=0 or raising),
-    so callers can distinguish "no comparable coefficients" from "perfect
-    recovery"."""
-    shared_keys = [k for k in true if k in fitted]
-    if not shared_keys:
-        return None
-    errors = np.array([fitted[k] - true[k] for k in shared_keys])
-    return float(np.sqrt(np.mean(errors**2)))
-
-
-def _break_detection_lag(
-    fit_fn: Callable[..., object],
-    data: pd.DataFrame,
-    truth: GroundTruth,
-    fit_kwargs: dict,
-    period_col: str,
-    window_size: int = 1,
-) -> Optional[float]:
-    """Estimate how many periods after the true break the model's fitted
-    coefficient actually shifts, via rolling-window refits.
-
-    For each structural break with kind="coefficient_shift" (the only kind
-    with a well-defined "which coefficient changed" target), refits the
-    same model spec on each period window and finds the first period where
-    the fitted coefficient crosses halfway between the true pre-break and
-    post-break values. Returns the signed lag (detected_period -
-    true_break_period); positive means detection lagged the true break,
-    negative means it was detected early (e.g. due to noise), 0 means
-    exact detection at the resolution of `window_size`.
-
-    Returns None if no coefficient_shift break is present, or if the
-    target coefficient never crosses the halfway threshold in any window
-    (e.g. because the model fit failed to detect the break at all).
-    """
-    coef_shift_breaks = [b for b in truth.break_points if b.kind == "coefficient_shift"]
-    if not coef_shift_breaks:
-        return None
-
-    brk = coef_shift_breaks[0]
-    # Note: BreakInfo does not currently store which design-matrix column
-    # coefficient_shift targeted (only the outcome name via `target`), so
-    # we can't look up the affected coefficient directly from ground truth
-    # here. Instead we detect it empirically below by comparing pre- and
-    # post-break refits and taking whichever coefficient changed most --
-    # robust in practice since a real break should dominate any other
-    # cross-window noise in the fitted coefficients.
-
-    periods = sorted(data[period_col].unique())
-    if len(periods) < 2:
-        return None
-
-    pre_period_data = data[data[period_col] < brk.period]
-    post_period_data = data[data[period_col] >= brk.period]
-    if pre_period_data.empty or post_period_data.empty:
-        return None
-
-    pre_fit = _extract_coefficients(fit_fn(pre_period_data, **fit_kwargs))
-    post_fit = _extract_coefficients(fit_fn(post_period_data, **fit_kwargs))
-
-    changed_key = None
-    max_delta = 0.0
-    for key in pre_fit:
-        if key in post_fit:
-            delta = abs(post_fit[key] - pre_fit[key])
-            if delta > max_delta:
-                max_delta = delta
-                changed_key = key
-
-    if changed_key is None or max_delta < 1e-6:
-        return None
-
-    pre_val = pre_fit[changed_key]
-    post_val = post_fit[changed_key]
-    halfway = (pre_val + post_val) / 2.0
-
-    detected_period = None
-    for p in periods:
-        window = data[
-            (data[period_col] >= p) & (data[period_col] < p + window_size)
-        ]
-        if window.empty:
-            continue
-        window_fit = _extract_coefficients(fit_fn(window, **fit_kwargs))
-        val = window_fit.get(changed_key)
-        if val is None:
-            continue
-        crossed = (val >= halfway) if post_val > pre_val else (val <= halfway)
-        if crossed:
-            detected_period = p
-            break
-
-    if detected_period is None:
-        return None
-
-    return float(detected_period - brk.period)
 
 
 # ----------------------------------------------------------------------
@@ -380,6 +269,7 @@ def compare_models(
     models: dict[str, tuple[Callable[..., object], Callable[..., np.ndarray]]],
     weights: Optional[dict[str, float]] = None,
     fit_kwargs_per_model: Optional[dict[str, dict]] = None,
+    metric_registry: Optional[MetricRegistry] = None,
 ) -> ComparisonReport:
     """Run multiple models against the same DGP/ground truth.
 
@@ -394,6 +284,11 @@ def compare_models(
     `fit_kwargs_per_model` optionally supplies per-model `fit_kwargs` (e.g.
     a different `formula=` string per model), keyed by the same display
     names used in `models`.
+
+    `metric_registry` is passed through to the underlying `StressTest` for
+    every model (the same registry is used for all models being compared,
+    so their metrics remain directly comparable). Defaults to
+    `spuriosity.metrics.default_registry`.
     """
     effective_weights = dict(_DEFAULT_COMPOSITE_WEIGHTS)
     if weights is not None:
@@ -401,7 +296,7 @@ def compare_models(
 
     fit_kwargs_per_model = fit_kwargs_per_model or {}
 
-    stress_test = StressTest(truth)
+    stress_test = StressTest(truth, metric_registry=metric_registry)
     reports = {}
     for model_name, (fit_fn, _predict_fn) in models.items():
         kwargs = fit_kwargs_per_model.get(model_name, {})

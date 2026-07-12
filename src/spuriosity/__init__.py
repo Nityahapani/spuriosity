@@ -12,6 +12,8 @@ from spuriosity import reference
 from spuriosity.generator import PanelGenerator
 from spuriosity.ground_truth import BreakInfo, GroundTruth, SelectionInfo
 from spuriosity.hte import HTE
+from spuriosity.metrics import MetricContext, MetricRegistry, default_registry
+from spuriosity.pathologies import Confounder, Pathology, SelectionBias, StructuralBreak
 from spuriosity.stress_test import ComparisonReport, StressTest, StressTestReport, compare_models
 from spuriosity.viz import plot_recovery_report
 
@@ -27,4 +29,11 @@ __all__ = [
     "compare_models",
     "ComparisonReport",
     "plot_recovery_report",
+    "MetricContext",
+    "MetricRegistry",
+    "default_registry",
+    "Pathology",
+    "StructuralBreak",
+    "Confounder",
+    "SelectionBias",
 ]
