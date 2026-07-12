@@ -314,3 +314,76 @@ def test_ground_truth_treatment_effect_none_without_treatment():
     gen.set_outcome(formula="x1", coefficients={"x1": 1.0})
     _, truth = gen.generate()
     assert truth.treatment_effect_ate is None
+
+
+# ----------------------------------------------------------------------
+# __repr__
+# ----------------------------------------------------------------------
+
+
+def test_repr_includes_basic_shape_and_seed():
+    """The repr is a debugging snapshot, not a round-trip. We just check
+    that the key shape/seed info is in the first line."""
+    gen = PanelGenerator(n_entities=100, n_periods=5, seed=99)
+    r = repr(gen)
+    assert "PanelGenerator" in r
+    assert "n_entities=100" in r
+    assert "n_periods=5" in r
+    assert "seed=99" in r
+
+
+def test_repr_shows_declared_variables_treatment_outcome():
+    gen = _basic_generator(seed=7)
+    r = repr(gen)
+    # All three declared variables should appear
+    assert "x1" in r
+    assert "x2" in r
+    assert "treat" in r
+    # Treatment line
+    assert "treatment:" in r
+    # Outcome line (formula + coefficients + noise)
+    assert "outcome:" in r
+    assert "formula=" in r
+    assert "noise_std" in r
+
+
+def test_repr_shows_pathology_counts_by_type():
+    gen = PanelGenerator(n_entities=10, n_periods=1, seed=1)
+    gen.add_variable("x1")
+    gen.set_outcome(formula="x1", coefficients={"x1": 1.0})
+    gen.add_structural_break(period=0, target="y", kind="mean_shift", magnitude=1.0)
+    gen.add_confounder(feature="x1", outcome="y", strength=0.5, observed=False)
+    r = repr(gen)
+    # The pathologies section should be present and name both types
+    assert "pathologies (2):" in r
+    assert "StructuralBreak" in r
+    assert "Confounder" in r
+
+
+def test_repr_handles_minimal_generator_gracefully():
+    """A bare PanelGenerator with no variables / no treatment / no outcome
+    should still produce a valid repr without raising."""
+    gen = PanelGenerator(n_entities=10, n_periods=1, seed=1)
+    r = repr(gen)
+    assert "PanelGenerator" in r
+    assert "variables: <none>" in r
+    assert "treatment: <none>" in r
+    # The outcome is unset at this point -- a clear "<unset>" marker is the
+    # whole point of the repr (tells you generate() will fail).
+    assert "outcome: <unset" in r
+
+
+def test_repr_shows_hte_when_present():
+    gen = PanelGenerator(n_entities=10, n_periods=1, seed=1)
+    gen.add_variable("x1")
+    gen.add_treatment("treat", assignment="random", start_period=0)
+    gen.set_outcome(
+        formula="x1 + treat",
+        coefficients={"x1": 0.0, "treat": 0.0, "Intercept": 0.0},  # treat coef 0 to avoid HTE warning
+        noise_std=0.1,
+    )
+    gen.add_hte(treatment="treat", modifier="x1", formula="1.0 + 0.5*x1")
+    r = repr(gen)
+    assert "hte:" in r
+    assert "treatment='treat'" in r
+    assert "modifier='x1'" in r
