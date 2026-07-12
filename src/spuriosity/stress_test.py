@@ -62,6 +62,7 @@ class StressTestReport:
     metrics: dict[str, float] = field(default_factory=dict)
     fitted_coefficients: dict[str, float] = field(default_factory=dict)
     true_coefficients: dict[str, float] = field(default_factory=dict)
+    true_cate: Optional[Callable[[float], float]] = None
 
     def summary(self) -> None:
         """Print a human-readable summary of this report."""
@@ -142,6 +143,7 @@ class StressTest:
             metrics=metrics,
             fitted_coefficients=fitted_coefficients,
             true_coefficients=dict(self.truth.true_coefficients),
+            true_cate=self.truth.true_cate,
         )
 
 

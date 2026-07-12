@@ -13,9 +13,7 @@ from spuriosity.generator import PanelGenerator
 from spuriosity.ground_truth import BreakInfo, GroundTruth, SelectionInfo
 from spuriosity.hte import HTE
 from spuriosity.stress_test import ComparisonReport, StressTest, StressTestReport, compare_models
-
-# Public API surface (populated further as modules are implemented).
-# from spuriosity.viz import plot_recovery_report
+from spuriosity.viz import plot_recovery_report
 
 __all__ = [
     "PanelGenerator",
@@ -28,4 +26,5 @@ __all__ = [
     "StressTestReport",
     "compare_models",
     "ComparisonReport",
+    "plot_recovery_report",
 ]
