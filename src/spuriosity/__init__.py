@@ -8,6 +8,7 @@ See docs/design_spec.md in the repository for the full design rationale.
 
 __version__ = "0.1.0"
 
+from spuriosity import reference
 from spuriosity.generator import PanelGenerator
 from spuriosity.ground_truth import BreakInfo, GroundTruth, SelectionInfo
 from spuriosity.hte import HTE
@@ -15,7 +16,6 @@ from spuriosity.hte import HTE
 # Public API surface (populated further as modules are implemented).
 # from spuriosity.stress_test import StressTest, compare_models
 # from spuriosity.viz import plot_recovery_report
-# from spuriosity import reference
 
 __all__ = [
     "PanelGenerator",
@@ -23,4 +23,5 @@ __all__ = [
     "BreakInfo",
     "SelectionInfo",
     "HTE",
+    "reference",
 ]
