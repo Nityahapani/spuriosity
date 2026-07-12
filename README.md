@@ -105,8 +105,6 @@ report.summary()
 See [`docs/design_spec.md`](docs/design_spec.md) for the full API design and
 architectural decisions.
 
-A full end-to-end example is in [`examples/01_quickstart.ipynb`](examples/01_quickstart.ipynb) — build a DGP, run a stress test, plot the recovery, compare models, in ~10 seconds.
-
 ## Common gotchas
 
 These are the five things that bite people on first use. Each is intentional
