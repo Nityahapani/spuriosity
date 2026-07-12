@@ -38,8 +38,7 @@ def test_compare_models_ranks_controlled_model_above_naive():
 def test_ranked_table_returns_dataframe():
     df, truth = _confounded_data(n_entities=1000)
     results = compare_models(
-        data=df,
-        truth=truth,
+        data=df, truth=truth,
         models={"OLS": (reference.ols_fit, reference.ols_predict)},
         fit_kwargs_per_model={"OLS": {"formula": "y ~ x1 + _confounder_x1"}},
     )
@@ -51,8 +50,7 @@ def test_ranked_table_returns_dataframe():
 def test_ranked_table_by_single_metric():
     df, truth = _confounded_data(n_entities=1000)
     results = compare_models(
-        data=df,
-        truth=truth,
+        data=df, truth=truth,
         models={"OLS": (reference.ols_fit, reference.ols_predict)},
         fit_kwargs_per_model={"OLS": {"formula": "y ~ x1 + _confounder_x1"}},
     )
@@ -68,8 +66,7 @@ def test_ranked_table_excludes_models_missing_the_requested_metric():
     df, truth = gen.generate()  # no confounder -> no confounding_bias metric
 
     results = compare_models(
-        data=df,
-        truth=truth,
+        data=df, truth=truth,
         models={"OLS": (reference.ols_fit, reference.ols_predict)},
         fit_kwargs_per_model={"OLS": {"formula": "y ~ x1"}},
     )
@@ -81,8 +78,7 @@ def test_ranked_table_excludes_models_missing_the_requested_metric():
 def test_custom_weights_override_defaults_but_keep_unspecified_at_default():
     df, truth = _confounded_data(n_entities=1000)
     results = compare_models(
-        data=df,
-        truth=truth,
+        data=df, truth=truth,
         models={"OLS": (reference.ols_fit, reference.ols_predict)},
         fit_kwargs_per_model={"OLS": {"formula": "y ~ x1 + _confounder_x1"}},
         weights={"coef_rmse": 10.0},
@@ -94,8 +90,7 @@ def test_custom_weights_override_defaults_but_keep_unspecified_at_default():
 def test_reports_accessible_individually_regardless_of_ranking():
     df, truth = _confounded_data(n_entities=1000)
     results = compare_models(
-        data=df,
-        truth=truth,
+        data=df, truth=truth,
         models={
             "model_a": (reference.ols_fit, reference.ols_predict),
             "model_b": (reference.ols_fit, reference.ols_predict),
@@ -113,8 +108,7 @@ def test_reports_accessible_individually_regardless_of_ranking():
 def test_compare_models_with_three_models_including_sklearn():
     df, truth = _confounded_data(n_entities=50_000)
     results = compare_models(
-        data=df,
-        truth=truth,
+        data=df, truth=truth,
         models={
             "naive_OLS": (reference.ols_fit, reference.ols_predict),
             "controlled_OLS": (reference.ols_fit, reference.ols_predict),
@@ -144,3 +138,50 @@ def test_empty_models_dict_produces_empty_reports():
     results = compare_models(data=df, truth=truth, models={})
     assert results.reports == {}
     assert results.ranked_table().empty
+
+
+def test_summary_does_not_raise_with_multiple_models():
+    """`summary()` should print a human-readable report without raising,
+    mirroring `StressTestReport.summary()` for API symmetry."""
+    df, truth = _confounded_data(n_entities=2000)
+    results = compare_models(
+        data=df, truth=truth,
+        models={
+            "naive_OLS":       (reference.ols_fit, reference.ols_predict),
+            "controlled_OLS":  (reference.ols_fit, reference.ols_predict),
+        },
+        fit_kwargs_per_model={
+            "naive_OLS":      {"formula": "y ~ x1"},
+            "controlled_OLS": {"formula": "y ~ x1 + _confounder_x1"},
+        },
+    )
+    # Just exercise the call -- the formatting is the contract, not string equality.
+    results.summary()
+
+
+def test_summary_handles_empty_reports_dict():
+    """`summary()` on an empty report (no models passed) should not raise."""
+    gen = PanelGenerator(n_entities=100, n_periods=1, seed=1)
+    gen.add_variable("x1")
+    gen.set_outcome(formula="x1", coefficients={"x1": 1.0})
+    df, truth = gen.generate()
+    results = compare_models(data=df, truth=truth, models={})
+    results.summary()  # must not raise
+
+
+def test_summary_handles_models_with_no_applicable_metrics():
+    """When no model has any applicable metric under the current weights,
+    `summary()` should still print a sensible message instead of crashing."""
+    gen = PanelGenerator(n_entities=100, n_periods=1, seed=2)
+    gen.add_variable("x1")
+    gen.set_outcome(formula="x1", coefficients={"x1": 1.0})
+    df, truth = gen.generate()  # no confounder, no break, no HTE -> no metrics
+
+    # Force weights to a metric that will never apply
+    results = compare_models(
+        data=df, truth=truth,
+        models={"OLS": (reference.ols_fit, reference.ols_predict)},
+        fit_kwargs_per_model={"OLS": {"formula": "y ~ x1"}},
+        weights={"confounding_bias": 1.0, "break_detection_lag": 1.0},
+    )
+    results.summary()  # must not raise; should print "(no models ...)" message
