@@ -135,3 +135,36 @@ def test_plot_saves_to_file(tmp_path):
     fig.savefig(out_path)
     assert out_path.exists()
     assert out_path.stat().st_size > 0
+
+
+def test_plot_save_path_kwarg_writes_file_and_returns_figure(tmp_path):
+    """`save_path=` is a one-shot convenience: save the figure and return it.
+    The Figure object is always returned so the caller can still show / save
+    it elsewhere if they want."""
+    report = _basic_stress_test_report()
+    out_path = tmp_path / "via_kwarg.png"
+    fig = plot_recovery_report(report, save_path=str(out_path))
+    assert fig is not None
+    assert hasattr(fig, "savefig")
+    assert out_path.exists()
+    assert out_path.stat().st_size > 0
+
+
+def test_plot_save_path_kwarg_works_for_comparison_report(tmp_path):
+    """`save_path=` also works for ComparisonReport, not just StressTestReport."""
+    cmp = _basic_comparison_report()
+    out_path = tmp_path / "comparison.png"
+    fig = plot_recovery_report(cmp, save_path=str(out_path))
+    assert fig is not None
+    assert out_path.exists()
+    assert out_path.stat().st_size > 0
+
+
+def test_plot_save_path_none_does_not_write(tmp_path):
+    """When `save_path=None` (the default), no file is written and the
+    Figure is still returned."""
+    report = _basic_stress_test_report()
+    # tmp_path is empty before, should still be empty after
+    fig = plot_recovery_report(report)
+    assert fig is not None
+    assert list(tmp_path.iterdir()) == []  # no files written

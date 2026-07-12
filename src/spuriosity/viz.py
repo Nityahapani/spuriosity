@@ -29,6 +29,7 @@ def _require_matplotlib():
 def plot_recovery_report(
     report: Union[StressTestReport, ComparisonReport],
     cate_range: Optional[tuple[float, float]] = None,
+    save_path: Optional[str] = None,
 ):
     """Visualize a StressTestReport or ComparisonReport.
 
@@ -42,21 +43,30 @@ def plot_recovery_report(
     `default_composite` score, sorted best-to-worst (lowest error first),
     annotated with each model's individual component metrics.
 
-    Returns the created matplotlib Figure (also displayed via
-    `plt.show()`-equivalent inline behavior in notebook contexts, but the
-    figure object is returned either way for saving/further customization).
+    The `Figure` object is always returned so the caller can save / show
+    / customize it themselves. For the common one-shot case, pass
+    `save_path=` and the figure will be saved there (after `tight_layout`)
+    before being returned; nothing is shown or closed automatically.
+
+    Returns the created matplotlib Figure.
     """
     plt = _require_matplotlib()
 
     if isinstance(report, StressTestReport):
-        return _plot_stress_test_report(plt, report, cate_range)
+        fig = _plot_stress_test_report(plt, report, cate_range)
     elif isinstance(report, ComparisonReport):
-        return _plot_comparison_report(plt, report)
+        fig = _plot_comparison_report(plt, report)
     else:
         raise TypeError(
             f"plot_recovery_report expects a StressTestReport or ComparisonReport, "
             f"got {type(report).__name__}"
         )
+
+    if save_path is not None:
+        # tight_layout was already applied by the per-report helper; just save.
+        fig.savefig(save_path, bbox_inches="tight")
+
+    return fig
 
 
 def _plot_stress_test_report(plt, report: StressTestReport, cate_range: Optional[tuple[float, float]]):

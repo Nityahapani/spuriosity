@@ -23,6 +23,10 @@ class BreakInfo:
     kind: str
     magnitude: float
 
+    def __repr__(self) -> str:
+        # Lead with the kind, since that's what you scan for first when debugging
+        return f"BreakInfo(kind={self.kind!r}, period={self.period}, target={self.target!r}, magnitude={self.magnitude})"
+
 
 @dataclass(frozen=True)
 class SelectionInfo:
@@ -30,6 +34,9 @@ class SelectionInfo:
 
     rule: str
     drop_prob: float
+
+    def __repr__(self) -> str:
+        return f"SelectionInfo(rule={self.rule!r}, drop_prob={self.drop_prob})"
 
 
 @dataclass(frozen=True)
@@ -54,6 +61,34 @@ class GroundTruth:
     spuriosity_version: str = ""
     numpy_version: str = ""
     seed: int = 0
+
+    def __repr__(self) -> str:
+        """Compact, debugging-friendly summary of the ground truth.
+
+        Designed for notebooks: one screen of text, every populated field
+        visible at a glance, no truncation of the coefficient dict
+        (these are usually 2–6 entries).
+        """
+        parts: list[str] = [f"GroundTruth(seed={self.seed}, spuriosity={self.spuriosity_version!r})"]
+
+        if self.true_coefficients:
+            coefs = ", ".join(f"{k!r}: {v}" for k, v in self.true_coefficients.items())
+            parts.append(f"  true_coefficients: {{{coefs}}}")
+        else:
+            parts.append("  true_coefficients: <empty>")
+
+        if self.break_points:
+            parts.append(f"  break_points: {len(self.break_points)} ({[b.kind for b in self.break_points]})")
+        if self.confounding_strength:
+            parts.append(f"  confounding_strength: {self.confounding_strength}")
+        if self.selection_mechanism is not None:
+            sm = self.selection_mechanism
+            parts.append(f"  selection_mechanism: rule={sm.rule!r}, drop_prob={sm.drop_prob}")
+        if self.treatment_effect_ate is not None:
+            parts.append(f"  treatment_effect_ate: {self.treatment_effect_ate:.4f}")
+        parts.append(f"  has_true_cate: {self.true_cate is not None}")
+
+        return "\n".join(parts)
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to a plain dict. `true_cate`, being a callable, is not
