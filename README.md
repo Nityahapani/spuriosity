@@ -40,7 +40,7 @@ the truth, or gets fooled by a specific, named pathology.
 - `StressTest` — evaluate any model (function-based `fit_fn`/`predict_fn`)
   against the ground truth.
 - `spuriosity.reference` — batteries-included fits (OLS, sklearn LinearRegression,
-  DiD, DoubleML, logit) so a first stress test runs in ~5 lines.
+  DiD, DoubleML, logit) so a first stress test runs in a few lines.
 - `compare_models()` — benchmark multiple models against the same DGP with a
   transparent, user-overridable composite ranking plus always-visible individual
   metrics.
@@ -49,13 +49,32 @@ the truth, or gets fooled by a specific, named pathology.
 
 ## Installation
 
-Not yet published to PyPI. Once available:
+`spuriosity` is not yet published to PyPI. Install from source (editable,
+recommended for development):
 
 ```bash
-pip install spuriosity
+git clone https://github.com/Nityahapani/spuriosity.git
+cd spuriosity
+pip install -e ".[dev,viz]"
 ```
 
-## Quickstart (target v1 API)
+That pulls in everything: `numpy`, `pandas`, `patsy`, `statsmodels`, `scipy`,
+plus the `viz` extras (matplotlib), `sklearn` and `doubleml` for the reference
+fits, and `pytest`/`ruff`/`mypy` for development.
+
+For a minimal install without the optional extras:
+
+```bash
+pip install -e .
+```
+
+## Quickstart
+
+The `set_outcome` formula is **right-hand side only** (the outcome column
+`y` is being generated, so it can't appear on the LHS of its own DGP). True
+coefficients are supplied as a separate dict, keyed by the resulting
+design-matrix column names (including `"Intercept"`, which patsy adds
+automatically).
 
 ```python
 from spuriosity import PanelGenerator, StressTest, reference
@@ -63,13 +82,23 @@ from spuriosity import PanelGenerator, StressTest, reference
 gen = PanelGenerator(n_entities=500, n_periods=40, seed=42)
 gen.add_variable("x1", dist="normal", mean=0, std=1)
 gen.add_treatment("treat", assignment="random", start_period=20)
-gen.set_outcome(formula="y ~ 2*x1 + 3*treat", noise_std=1.0)
+gen.set_outcome(
+    formula="x1 + treat",  # RHS only — `y` is the generated outcome
+    coefficients={"x1": 2.0, "treat": 3.0, "Intercept": 0.0},
+    noise_std=1.0,
+)
 gen.add_confounder(feature="x1", outcome="y", strength=0.6, observed=False)
 
 df, truth = gen.generate()
 
 test = StressTest(truth)
-report = test.evaluate(fit_fn=reference.ols_fit, predict_fn=reference.ols_predict, data=df)
+report = test.evaluate(
+    fit_fn=reference.ols_fit,
+    predict_fn=reference.ols_predict,
+    data=df,
+    fit_kwargs={"formula": "y ~ x1 + treat"},  # full patsy here (LHS + RHS)
+    model_name="OLS",
+)
 report.summary()
 ```
 
