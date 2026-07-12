@@ -306,6 +306,70 @@ class PanelGenerator:
             print(f"[spuriosity warning] {w}")
         return warnings_found
 
+    def __repr__(self) -> str:
+        """Compact, debugging-friendly summary of the builder state.
+
+        Not a round-trip repr (re-evaluating it will not rebuild the
+        generator -- this is a snapshot, not a recipe). For a serializable
+        record of the DGP, use the `GroundTruth` returned by `generate()`.
+        """
+        parts: list[str] = [
+            f"PanelGenerator(n_entities={self.n_entities}, n_periods={self.n_periods}, seed={self.seed})",
+        ]
+
+        # Variables
+        if self._variables:
+            var_summary = ", ".join(
+                f"{name}({spec.dist})" for name, spec in self._variables.items()
+            )
+            parts.append(f"  variables: {var_summary}")
+        else:
+            parts.append("  variables: <none>")
+
+        # Treatment
+        if self._treatment is not None:
+            t = self._treatment
+            parts.append(
+                f"  treatment: {t.name}(assignment={t.assignment}, "
+                f"start_period={t.start_period}, propensity={t.propensity})"
+            )
+        else:
+            parts.append("  treatment: <none>")
+
+        # Outcome
+        if self._outcome is not None:
+            o = self._outcome
+            kind = "fn" if o.fn is not None else f"formula={o.formula!r}"
+            coefs = (
+                "{" + ", ".join(f"{k!r}: {v}" for k, v in (o.coefficients or {}).items()) + "}"
+                if o.coefficients
+                else "<none>"
+            )
+            parts.append(f"  outcome: name={o.name!r}, {kind}, coefficients={coefs}, noise_std={o.noise_std}")
+        else:
+            parts.append("  outcome: <unset -- call set_outcome(...) before generate()>")
+
+        # Pathologies (compact by type)
+        if self._pathologies:
+            by_type: dict[str, int] = {}
+            for p in self._pathologies:
+                by_type[type(p).__name__] = by_type.get(type(p).__name__, 0) + 1
+            path_summary = ", ".join(f"{k}×{v}" for k, v in sorted(by_type.items()))
+            parts.append(f"  pathologies ({len(self._pathologies)}): {path_summary}")
+        else:
+            parts.append("  pathologies: <none>")
+
+        # HTE
+        if self._hte is not None:
+            h = self._hte
+            parts.append(
+                f"  hte: treatment={h.treatment!r}, modifier={h.modifier!r}, formula={h.formula!r}"
+            )
+        else:
+            parts.append("  hte: <none>")
+
+        return "\n".join(parts)
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
@@ -432,7 +496,7 @@ class PanelGenerator:
             if self._hte.modifier not in df.columns:
                 raise ValueError(
                     f"add_hte() modifier {self._hte.modifier!r} is not a declared variable, "
-                    f"treatment, or reserved column on this PanelGenerator."
+                    "treatment, or reserved column on this PanelGenerator."
                 )
             assert design is not None
             if self._hte.treatment not in design.columns:
@@ -498,38 +562,24 @@ class PanelGenerator:
         if self._hte is not None:
             treatment_effect_ate = float(np.mean(per_row_effect))
         else:
-            treatment_effect_ate = (
-                true_coefficients.get(self._treatment.name) if self._treatment is not None else None
-            )
+            if self._treatment is not None:
+                treatment_effect_ate = self._outcome.coefficients.get(self._treatment.name, 0.0) if self._outcome.coefficients else 0.0
+            else:
+                treatment_effect_ate = None
 
-        break_points = []
-        for brk in structural_breaks:
-            break_points.extend(brk.ground_truth_contribution()["break_points"])
-
-        confounding_strength = {}
-        for conf in confounders:
-            confounding_strength.update(conf.ground_truth_contribution()["confounding_strength"])
-
-        selection_mechanism = None
-        if selection_biases:
-            selection_mechanism = selection_biases[0].ground_truth_contribution()["selection_mechanism"]
-
-        truth = GroundTruth(
+        ground_truth = GroundTruth(
             true_coefficients=true_coefficients,
-            break_points=break_points,
-            confounding_strength=confounding_strength,
+            break_points=[BreakInfo(period=b.period, target=b.target, kind=b.kind, magnitude=b.magnitude) for b in structural_breaks],
+            confounding_strength={c.feature: c.strength for c in confounders},
             true_cate=true_cate_fn,
-            selection_mechanism=selection_mechanism,
+            selection_mechanism=(
+                SelectionInfo(rule=selection_biases[0].rule, drop_prob=selection_biases[0].drop_prob)
+                if selection_biases else None
+            ),
             treatment_effect_ate=treatment_effect_ate,
-            spuriosity_version=_get_spuriosity_version(),
+            spuriosity_version=__version__,
             numpy_version=np.__version__,
             seed=self.seed,
         )
 
-        return df, truth
-
-
-def _get_spuriosity_version() -> str:
-    from spuriosity import __version__
-
-    return __version__
+        return df, ground_truth
