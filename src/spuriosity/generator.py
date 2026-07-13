@@ -311,6 +311,70 @@ class PanelGenerator:
             print(f"[spuriosity warning] {w}")
         return warnings_found
 
+    def __repr__(self) -> str:
+        """Compact, debugging-friendly summary of the builder state.
+
+        Not a round-trip repr (re-evaluating it will not rebuild the
+        generator -- this is a snapshot, not a recipe). For a serializable
+        record of the DGP, use the `GroundTruth` returned by `generate()`.
+        """
+        parts: list[str] = [
+            f"PanelGenerator(n_entities={self.n_entities}, n_periods={self.n_periods}, seed={self.seed})",
+        ]
+
+        # Variables
+        if self._variables:
+            var_summary = ", ".join(
+                f"{name}({spec.dist})" for name, spec in self._variables.items()
+            )
+            parts.append(f"  variables: {var_summary}")
+        else:
+            parts.append("  variables: <none>")
+
+        # Treatment
+        if self._treatment is not None:
+            t = self._treatment
+            parts.append(
+                f"  treatment: {t.name}(assignment={t.assignment}, "
+                f"start_period={t.start_period}, propensity={t.propensity})"
+            )
+        else:
+            parts.append("  treatment: <none>")
+
+        # Outcome
+        if self._outcome is not None:
+            o = self._outcome
+            kind = "fn" if o.fn is not None else f"formula={o.formula!r}"
+            coefs = (
+                "{" + ", ".join(f"{k!r}: {v}" for k, v in (o.coefficients or {}).items()) + "}"
+                if o.coefficients
+                else "<none>"
+            )
+            parts.append(f"  outcome: name={o.name!r}, {kind}, coefficients={coefs}, noise_std={o.noise_std}")
+        else:
+            parts.append("  outcome: <unset -- call set_outcome(...) before generate()>")
+
+        # Pathologies (compact by type)
+        if self._pathologies:
+            by_type: dict[str, int] = {}
+            for p in self._pathologies:
+                by_type[type(p).__name__] = by_type.get(type(p).__name__, 0) + 1
+            path_summary = ", ".join(f"{k}×{v}" for k, v in sorted(by_type.items()))
+            parts.append(f"  pathologies ({len(self._pathologies)}): {path_summary}")
+        else:
+            parts.append("  pathologies: <none>")
+
+        # HTE
+        if self._hte is not None:
+            h = self._hte
+            parts.append(
+                f"  hte: treatment={h.treatment!r}, modifier={h.modifier!r}, formula={h.formula!r}"
+            )
+        else:
+            parts.append("  hte: <none>")
+
+        return "\n".join(parts)
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
