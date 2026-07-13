@@ -135,3 +135,37 @@ def test_plot_saves_to_file(tmp_path):
     fig.savefig(out_path)
     assert out_path.exists()
     assert out_path.stat().st_size > 0
+
+
+def _multidim_hte_stress_test_report(n_entities: int = 1000, seed: int = 42) -> StressTestReport:
+    gen = PanelGenerator(n_entities=n_entities, n_periods=1, seed=seed)
+    gen.add_variable("x1", dist="normal", mean=0, std=1)
+    gen.add_variable("x2", dist="normal", mean=0, std=1)
+    gen.add_treatment("treat", propensity=0.5, start_period=0)
+    gen.set_outcome(
+        formula="x1 + x2 + treat",
+        coefficients={"x1": 1.0, "x2": 1.0, "treat": 0.0, "Intercept": 0.0},
+        noise_std=0.1,
+    )
+    gen.add_hte(treatment="treat", modifier=["x1", "x2"], formula="3 + 1.5*x1 - 0.5*x2")
+    df, truth = gen.generate()
+    test = StressTest(truth)
+    return test.evaluate(
+        fit_fn=reference.ols_fit,
+        predict_fn=reference.ols_predict,
+        data=df,
+        fit_kwargs={"formula": "y ~ x1 + x2 + treat"},
+        model_name="OLS_multidim_HTE",
+    )
+
+
+def test_plot_multidim_cate_range_raises_clear_error():
+    report = _multidim_hte_stress_test_report()
+    with pytest.raises(ValueError, match="only supports single-dimension"):
+        plot_recovery_report(report, cate_range=(-3, 3))
+
+
+def test_plot_multidim_hte_report_without_cate_range_still_plots_coefficients():
+    report = _multidim_hte_stress_test_report()
+    fig = plot_recovery_report(report)  # no cate_range -> coefficient panel only
+    assert len(fig.axes) == 1

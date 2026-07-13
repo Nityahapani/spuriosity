@@ -188,3 +188,40 @@ v1 hard-coded its four component metrics (`coef_rmse`, `confounding_bias`,
 This closes the most-requested v1 gap (external users wanting to test
 their own metric against a spuriosity-generated DGP) without requiring
 users to fork or monkey-patch `StressTest`.
+
+### Multi-dimensional HTE
+
+v1 shipped single-dimension HTE only (`modifier: str`), deferred
+multi-dimensional CATE surfaces to a later release. v2 extends
+`PanelGenerator.add_hte(modifier=...)` and `spuriosity.hte.HTE` to accept
+either a single column name or a list of column names, while keeping the
+single-dimension case's public call signature **exactly unchanged** from
+v1 for backward compatibility:
+
+- Single modifier (str, or a length-1 list): `GroundTruth.true_cate` is
+  `Callable[[float], float]`, called positionally as `f(x)` -- identical
+  to v1.
+- Multiple modifiers (list of 2+ names): `GroundTruth.true_cate` instead
+  requires keyword arguments matching each modifier's name, e.g.
+  `f(x1=1.0, x2=2.0)`, to avoid positional-argument-order ambiguity. A
+  positional call raises `TypeError`; a missing/extra keyword raises a
+  `TypeError` naming the specific modifier(s) involved.
+- `HTE.modifiers` (plural, a list) is always available; `HTE.modifier`
+  (singular, a str) is preserved for backward compatibility but raises
+  `AttributeError` if the HTE is multi-dimensional, directing callers to
+  `.modifiers`.
+- `evaluate_on_column(array)` (singular, v1) is preserved for the
+  single-dimension case; `evaluate_on_columns({name: array, ...})`
+  (plural, v2) is the general-case vectorized evaluator used internally
+  by `PanelGenerator` regardless of dimensionality.
+- `plot_recovery_report`'s CATE panel (which plots a 1D curve) raises a
+  clear `ValueError` if given a multi-dimensional `true_cate` rather than
+  crashing on a confusing `TypeError` from the positional call it makes
+  internally; multi-dimensional CATE *surface* plotting is not
+  implemented. Coefficient-recovery plotting is unaffected either way.
+
+Verified end-to-end with a real binned mean-differencing estimator against
+actual generated 2D data (treated-vs-control outcome gap at
+`(x1=0, x2=0)` matches `true_cate(x1=0, x2=0)`, and at `(x1=2, x2=1)`
+matches `true_cate(x1=2, x2=1)`), and a 3-modifier case confirming the
+implementation generalizes beyond the 2D special case.

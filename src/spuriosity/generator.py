@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import warnings
 from dataclasses import dataclass
-from typing import Callable, Literal, Optional
+from typing import Callable, Literal, Optional, Union
 
 import numpy as np
 import pandas as pd
@@ -210,15 +210,20 @@ class PanelGenerator:
         )
         return self
 
-    def add_hte(self, treatment: str, modifier: str, formula: str) -> "PanelGenerator":
+    def add_hte(self, treatment: str, modifier: Union[str, list[str]], formula: str) -> "PanelGenerator":
         """Make `treatment`'s effect on the outcome vary with `modifier`,
         according to `formula` (a pandas.eval-evaluated expression in terms
         of `modifier`, e.g. ``"3 + 1.5*x1"``).
 
+        `modifier` accepts either a single column name (single-dimension
+        HTE, the v1 behavior) or a list of column names (multi-dimensional
+        HTE, v2). See `spuriosity.hte.HTE` for the resulting shape of
+        `GroundTruth.true_cate` in each case.
+
         Requires a treatment declared via `add_treatment` and an outcome
         specified via `set_outcome(formula=...)` (HTE is not supported with
-        an `fn=`-specified outcome in v1, since it needs to isolate and
-        replace the treatment's linear term in the design matrix).
+        an `fn=`-specified outcome, since it needs to isolate and replace
+        the treatment's linear term in the design matrix).
 
         See `spuriosity.hte.HTE` for the exact mechanism: this *replaces*
         the treatment's contribution to the outcome entirely, ignoring any
@@ -429,10 +434,11 @@ class PanelGenerator:
                     f"add_hte() targets treatment {self._hte.treatment!r}, but no treatment "
                     f"with that name was declared via add_treatment()."
                 )
-            if self._hte.modifier not in df.columns:
+            missing_modifiers = [m for m in self._hte.modifiers if m not in df.columns]
+            if missing_modifiers:
                 raise ValueError(
-                    f"add_hte() modifier {self._hte.modifier!r} is not a declared variable, "
-                    f"treatment, or reserved column on this PanelGenerator."
+                    f"add_hte() modifier(s) {missing_modifiers!r} are not declared variables, "
+                    f"treatments, or reserved columns on this PanelGenerator."
                 )
             assert design is not None
             if self._hte.treatment not in design.columns:
@@ -456,7 +462,8 @@ class PanelGenerator:
             # would otherwise have added for the treatment term.
             mean_outcome = mean_outcome - fixed_treatment_coef * treatment_col
 
-            per_row_effect = self._hte.evaluate_on_column(df[self._hte.modifier].to_numpy())
+            modifier_arrays = {m: df[m].to_numpy() for m in self._hte.modifiers}
+            per_row_effect = self._hte.evaluate_on_columns(modifier_arrays)
             mean_outcome = mean_outcome + per_row_effect * treatment_col
             true_cate_fn = self._hte.cate_fn()
 

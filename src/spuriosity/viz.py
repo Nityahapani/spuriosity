@@ -99,7 +99,16 @@ def _plot_stress_test_report(plt, report: StressTestReport, cate_range: Optional
         assert cate_range is not None
         assert report.true_cate is not None
         xs = np.linspace(cate_range[0], cate_range[1], 200)
-        ys = [report.true_cate(x) for x in xs]
+        try:
+            ys = [report.true_cate(x) for x in xs]
+        except TypeError as e:
+            raise ValueError(
+                "plot_recovery_report's CATE panel only supports single-dimension "
+                "true_cate callables (called positionally as f(x)). This report's "
+                "true_cate appears to require keyword arguments (a multi-dimensional "
+                "HTE) and is not yet plottable -- multi-dimensional CATE surface "
+                "plotting is not implemented."
+            ) from e
         ax.plot(xs, ys, label="True CATE", color="black")
         ax.set_xlabel("Modifier value")
         ax.set_ylabel("Treatment effect")

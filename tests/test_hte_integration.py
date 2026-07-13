@@ -79,7 +79,7 @@ def test_hte_requires_declared_modifier():
     gen.add_treatment("treat", propensity=0.5)
     gen.set_outcome(formula="treat", coefficients={"treat": 0.0})
     gen.add_hte(treatment="treat", modifier="nonexistent_x", formula="3 + 1.5*nonexistent_x")
-    with pytest.raises(ValueError, match="is not a declared variable, treatment, or reserved column"):
+    with pytest.raises(ValueError, match="are not declared variables, treatments, or reserved columns"):
         gen.generate()
 
 
