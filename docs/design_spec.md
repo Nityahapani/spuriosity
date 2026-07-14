@@ -225,3 +225,42 @@ actual generated 2D data (treated-vs-control outcome gap at
 `(x1=0, x2=0)` matches `true_cate(x1=0, x2=0)`, and at `(x1=2, x2=1)`
 matches `true_cate(x1=2, x2=1)`), and a 3-modifier case confirming the
 implementation generalizes beyond the 2D special case.
+
+### Heteroskedasticity pathology
+
+`PanelGenerator.add_heteroskedasticity(feature, formula)` makes the
+outcome's noise standard deviation vary with `feature` according to a
+`pandas.eval`-evaluated `formula` multiplier (e.g. `"1 + 0.5*x1**2"`),
+instead of the constant `noise_std` from `set_outcome`. Multiple calls
+compose multiplicatively, consistent with how `StructuralBreak`'s
+`variance_shift` kind already composes. Negative multiplier values are
+clamped to 0.
+
+This does not bias OLS point estimates but invalidates naive (non-robust)
+standard errors -- verified end-to-end: a fitted coefficient stays within
+0.05 of the true value at n=100k, while HC3-robust standard errors exceed
+naive OLS standard errors by >30%, the textbook signature of
+heteroskedasticity going undetected by a naive fit.
+
+### Multicollinearity pathology
+
+`PanelGenerator.add_multicollinearity(feature, correlated_with, correlation)`
+generates a **new** column (`feature` must not already be declared -- this
+is the opposite convention from `Confounder`/`Heteroskedasticity`, which
+modify an *existing* column) as a near-linear function of an existing
+`correlated_with` column, calibrated to Pearson correlation `correlation`
+via `feature = rho*z + sqrt(1-rho^2)*epsilon` on the standardized parent
+variable. `correlation` must be in `[0, 1)`; exactly 1.0 is disallowed
+since perfect collinearity makes OLS undefined rather than merely
+high-variance.
+
+The implied VIF for the collinear pair is the closed-form
+`1 / (1 - rho**2)`; verified against a real `statsmodels`
+`variance_inflation_factor` computation on generated data (predicted 5.26
+vs. actual 5.22 at rho=0.9, n=100k).
+
+Name-collision checking is bidirectional: declaring a variable with a name
+already claimed by an earlier `add_multicollinearity` call raises, and
+vice versa -- `_check_name_available` was extended to include
+multicollinearity-generated names in its taken-name set, closing a gap
+that existed only in one direction before this was added.

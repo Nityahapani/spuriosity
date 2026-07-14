@@ -32,7 +32,14 @@ import patsy
 from spuriosity._rng import RNGManager
 from spuriosity.ground_truth import GroundTruth
 from spuriosity.hte import HTE
-from spuriosity.pathologies import Confounder, SelectionBias, StructuralBreak, validate_combo as _validate_combo
+from spuriosity.pathologies import (
+    Confounder,
+    Heteroskedasticity,
+    Multicollinearity,
+    SelectionBias,
+    StructuralBreak,
+    validate_combo as _validate_combo,
+)
 
 _SUPPORTED_DISTS = ("normal", "uniform")
 
@@ -300,6 +307,43 @@ class PanelGenerator:
         self._pathologies.append(SelectionBias(rule=rule, drop_prob=drop_prob))
         return self
 
+    def add_heteroskedasticity(self, feature: str, formula: str) -> "PanelGenerator":
+        """Make the outcome's noise standard deviation vary with `feature`
+        according to `formula` (a pandas.eval-evaluated expression in terms
+        of `feature`, e.g. ``"1 + 0.5*x1**2"``), instead of being constant.
+
+        `feature` must already be declared via `add_variable` or
+        `add_treatment`. See `spuriosity.pathologies.Heteroskedasticity`
+        for the exact mechanism and its statistical consequences (unbiased
+        point estimates, invalid naive/non-robust standard errors).
+        Multiple calls compose multiplicatively (each formula's multiplier
+        is applied on top of the others).
+        """
+        self._pathologies.append(Heteroskedasticity(feature=feature, formula=formula))
+        return self
+
+    def add_multicollinearity(
+        self, feature: str, correlated_with: str, correlation: float
+    ) -> "PanelGenerator":
+        """Generate a new column named `feature`, constructed to have
+        approximately Pearson correlation `correlation` with the existing
+        `correlated_with` column (0 <= correlation < 1).
+
+        Unlike `add_confounder`, `feature` here must NOT already be
+        declared -- this pathology creates the new (collinear) column,
+        rather than modifying an existing one. `correlated_with` must
+        already be declared via `add_variable` or `add_treatment`.
+
+        See `spuriosity.pathologies.Multicollinearity` for the exact
+        generative mechanism and the closed-form VIF this pathology's
+        correlation target implies.
+        """
+        self._check_name_available(feature)
+        self._pathologies.append(
+            Multicollinearity(feature=feature, correlated_with=correlated_with, correlation=correlation)
+        )
+        return self
+
     def validate_combo(self) -> list[str]:
         """Check currently-added pathologies for likely conflicts.
 
@@ -387,6 +431,9 @@ class PanelGenerator:
             taken.add(self._treatment.name)
         if self._outcome is not None:
             taken.add(self._outcome.name)
+        taken.update(
+            p.feature for p in self._pathologies if isinstance(p, Multicollinearity)
+        )
         if name in taken:
             raise ValueError(f"Name {name!r} is already in use")
 
@@ -457,6 +504,16 @@ class PanelGenerator:
 
         if self._treatment is not None:
             df[self._treatment.name] = self._draw_treatment(n_rows, entity_ids, periods)
+
+        multicollinearities = [p for p in self._pathologies if isinstance(p, Multicollinearity)]
+        for mc in multicollinearities:
+            if mc.correlated_with not in df.columns:
+                raise ValueError(
+                    f"Multicollinearity for {mc.feature!r} references {mc.correlated_with!r}, "
+                    f"which is not a declared variable or treatment on this PanelGenerator."
+                )
+            gen = self._rng_manager.child(f"multicollinearity:{mc.feature}")
+            df[mc.feature] = mc.generate_feature(df[mc.correlated_with].to_numpy(), gen)
 
         confounders = [p for p in self._pathologies if isinstance(p, Confounder)]
         confounder_outcome_contribution = np.zeros(n_rows, dtype=float)
@@ -545,6 +602,16 @@ class PanelGenerator:
                 )
                 noise_std_per_row = noise_std_per_row * factor
 
+        heteroskedasticities = [p for p in self._pathologies if isinstance(p, Heteroskedasticity)]
+        for het in heteroskedasticities:
+            if het.feature not in df.columns:
+                raise ValueError(
+                    f"Heteroskedasticity references feature {het.feature!r}, which is not a "
+                    f"declared variable or treatment on this PanelGenerator."
+                )
+            multiplier = het.compute_noise_multiplier(df[het.feature].to_numpy())
+            noise_std_per_row = noise_std_per_row * multiplier
+
         noise_gen = self._rng_manager.child("outcome_noise")
         noise = noise_gen.normal(loc=0.0, scale=1.0, size=n_rows) * noise_std_per_row
         df[self._outcome.name] = mean_outcome + noise
@@ -585,12 +652,22 @@ class PanelGenerator:
         if selection_biases:
             selection_mechanism = selection_biases[0].ground_truth_contribution()["selection_mechanism"]
 
+        heteroskedasticity_info = []
+        for het in heteroskedasticities:
+            heteroskedasticity_info.extend(het.ground_truth_contribution()["heteroskedasticity"])
+
+        multicollinearity_info = []
+        for mc in multicollinearities:
+            multicollinearity_info.extend(mc.ground_truth_contribution()["multicollinearity"])
+
         truth = GroundTruth(
             true_coefficients=true_coefficients,
             break_points=break_points,
             confounding_strength=confounding_strength,
             true_cate=true_cate_fn,
             selection_mechanism=selection_mechanism,
+            heteroskedasticity=heteroskedasticity_info,
+            multicollinearity=multicollinearity_info,
             treatment_effect_ate=treatment_effect_ate,
             spuriosity_version=_get_spuriosity_version(),
             numpy_version=np.__version__,

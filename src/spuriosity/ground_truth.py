@@ -40,6 +40,36 @@ class SelectionInfo:
 
 
 @dataclass(frozen=True)
+class HeteroskedasticityInfo:
+    """Record of a single injected heteroskedasticity mechanism: the
+    outcome's noise standard deviation is scaled by `formula` (evaluated
+    in terms of `feature`) rather than held constant."""
+
+    feature: str
+    formula: str
+
+    def __repr__(self) -> str:
+        return f"HeteroskedasticityInfo(feature={self.feature!r}, formula={self.formula!r})"
+
+
+@dataclass(frozen=True)
+class MulticollinearityInfo:
+    """Record of a single injected multicollinearity mechanism: `feature`
+    was generated as a near-linear function of `correlated_with`, targeting
+    Pearson correlation `target_correlation`."""
+
+    feature: str
+    correlated_with: str
+    target_correlation: float
+
+    def __repr__(self) -> str:
+        return (
+            f"MulticollinearityInfo(feature={self.feature!r}, "
+            f"correlated_with={self.correlated_with!r}, target_correlation={self.target_correlation})"
+        )
+
+
+@dataclass(frozen=True)
 class GroundTruth:
     """The true data-generating process behind a generated panel dataset.
 
@@ -57,6 +87,8 @@ class GroundTruth:
     confounding_strength: dict[str, float] = field(default_factory=dict)
     true_cate: Optional[Callable[[float], float]] = None
     selection_mechanism: Optional[SelectionInfo] = None
+    heteroskedasticity: list[HeteroskedasticityInfo] = field(default_factory=list)
+    multicollinearity: list[MulticollinearityInfo] = field(default_factory=list)
     treatment_effect_ate: Optional[float] = None
     spuriosity_version: str = ""
     numpy_version: str = ""
@@ -84,6 +116,14 @@ class GroundTruth:
         if self.selection_mechanism is not None:
             sm = self.selection_mechanism
             parts.append(f"  selection_mechanism: rule={sm.rule!r}, drop_prob={sm.drop_prob}")
+        if self.heteroskedasticity:
+            parts.append(
+                f"  heteroskedasticity: {[h.feature for h in self.heteroskedasticity]}"
+            )
+        if self.multicollinearity:
+            parts.append(
+                f"  multicollinearity: {[(m.feature, m.correlated_with) for m in self.multicollinearity]}"
+            )
         if self.treatment_effect_ate is not None:
             parts.append(f"  treatment_effect_ate: {self.treatment_effect_ate:.4f}")
         parts.append(f"  has_true_cate: {self.true_cate is not None}")
@@ -101,6 +141,8 @@ class GroundTruth:
             "selection_mechanism": (
                 asdict(self.selection_mechanism) if self.selection_mechanism is not None else None
             ),
+            "heteroskedasticity": [asdict(h) for h in self.heteroskedasticity],
+            "multicollinearity": [asdict(m) for m in self.multicollinearity],
             "treatment_effect_ate": self.treatment_effect_ate,
             "spuriosity_version": self.spuriosity_version,
             "numpy_version": self.numpy_version,

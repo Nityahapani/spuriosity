@@ -10,10 +10,23 @@ __version__ = "0.1.0"
 
 from spuriosity import reference
 from spuriosity.generator import PanelGenerator
-from spuriosity.ground_truth import BreakInfo, GroundTruth, SelectionInfo
+from spuriosity.ground_truth import (
+    BreakInfo,
+    GroundTruth,
+    HeteroskedasticityInfo,
+    MulticollinearityInfo,
+    SelectionInfo,
+)
 from spuriosity.hte import HTE
 from spuriosity.metrics import MetricContext, MetricRegistry, default_registry
-from spuriosity.pathologies import Confounder, Pathology, SelectionBias, StructuralBreak
+from spuriosity.pathologies import (
+    Confounder,
+    Heteroskedasticity,
+    Multicollinearity,
+    Pathology,
+    SelectionBias,
+    StructuralBreak,
+)
 from spuriosity.stress_test import ComparisonReport, StressTest, StressTestReport, compare_models
 from spuriosity.viz import plot_recovery_report
 
@@ -22,6 +35,8 @@ __all__ = [
     "GroundTruth",
     "BreakInfo",
     "SelectionInfo",
+    "HeteroskedasticityInfo",
+    "MulticollinearityInfo",
     "HTE",
     "reference",
     "StressTest",
@@ -36,4 +51,6 @@ __all__ = [
     "StructuralBreak",
     "Confounder",
     "SelectionBias",
+    "Heteroskedasticity",
+    "Multicollinearity",
 ]

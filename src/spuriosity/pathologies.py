@@ -20,7 +20,12 @@ from typing import Literal
 import numpy as np
 import pandas as pd
 
-from spuriosity.ground_truth import BreakInfo, SelectionInfo
+from spuriosity.ground_truth import (
+    BreakInfo,
+    HeteroskedasticityInfo,
+    MulticollinearityInfo,
+    SelectionInfo,
+)
 
 _STRUCTURAL_BREAK_KINDS = ("mean_shift", "variance_shift", "coefficient_shift")
 
@@ -303,6 +308,134 @@ class SelectionBias(Pathology):
     def ground_truth_contribution(self) -> dict:
         return {
             "selection_mechanism": SelectionInfo(rule=self.rule, drop_prob=self.drop_prob),
+        }
+
+
+class Heteroskedasticity(Pathology):
+    """Makes the outcome's noise standard deviation vary as a function of
+    `feature`, rather than being constant, via a `pandas.eval`-evaluated
+    `formula` in terms of `feature` (e.g. ``"1 + 0.5*x1**2"``).
+
+    Mechanism: at each row, the outcome noise std is
+    ``base_noise_std * eval(formula, feature=value)`` instead of a flat
+    ``base_noise_std`` (the `noise_std` supplied to
+    `PanelGenerator.set_outcome`). `formula` should evaluate to a
+    non-negative multiplier; a warning-worthy but not hard-blocked case is
+    a formula that goes negative for some observed range of `feature`
+    (clamped to 0 at generation time, which would silently zero out noise
+    for those rows -- callers should choose formulas that stay positive
+    over the feature's realistic range, e.g. squared or exponential
+    forms rather than formulas that can cross zero).
+
+    This does not bias OLS point estimates (heteroskedasticity is a
+    violation of the constant-variance assumption, not of exogeneity), but
+    it invalidates naive (non-robust) standard errors -- the textbook
+    consequence, and the property this pathology exists to let users
+    verify their pipeline actually checks for (e.g. via White/HC3 robust
+    SEs or a Breusch-Pagan test) rather than trusting default OLS SEs.
+    """
+
+    def __init__(self, feature: str, formula: str) -> None:
+        self.feature = feature
+        self.formula = formula
+
+    def compute_noise_multiplier(self, feature_values: np.ndarray) -> np.ndarray:
+        """Evaluate `formula` against `feature_values`, returning the
+        per-row noise standard deviation multiplier. Negative results are
+        clamped to 0 (see class docstring)."""
+        try:
+            result = pd.eval(
+                self.formula,
+                local_dict={self.feature: pd.Series(feature_values)},
+                global_dict={},
+                engine="python",
+            )
+        except Exception as e:
+            raise ValueError(
+                f"Failed to evaluate heteroskedasticity formula {self.formula!r} for feature "
+                f"{self.feature!r}: {e}"
+            ) from e
+
+        arr = np.asarray(result, dtype=float)
+        if arr.shape == ():
+            arr = np.full(feature_values.shape, float(arr))
+        return np.clip(arr, a_min=0.0, a_max=None)
+
+    def ground_truth_contribution(self) -> dict:
+        return {
+            "heteroskedasticity": [
+                HeteroskedasticityInfo(feature=self.feature, formula=self.formula)
+            ],
+        }
+
+
+class Multicollinearity(Pathology):
+    """Generates `feature` as a near-linear function of an existing
+    `correlated_with` variable plus independent noise, calibrated so the
+    two columns have Pearson correlation approximately `correlation`
+    (0 <= correlation < 1; use values close to 1, e.g. 0.9-0.99, to model
+    realistic near-collinearity -- correlation=1.0 is disallowed since
+    perfect collinearity makes OLS undefined rather than merely unstable,
+    which is a degenerate edge case rather than the "high but estimable
+    VIF" scenario this pathology is meant to model).
+
+    Mechanism: given standardized `correlated_with` (call it `z`, i.e.
+    mean 0, unit variance over the generated sample) and target
+    correlation `rho`, the new feature is constructed as
+    ``feature = rho * z + sqrt(1 - rho**2) * epsilon`` where `epsilon` is
+    independent standard normal noise. This construction gives
+    `feature` unit variance and, in expectation, exactly `rho` correlation
+    with `correlated_with` -- the realized sample correlation will be close
+    to but not bit-for-bit exactly `rho` (finite-sample noise), converging
+    to `rho` as sample size grows.
+
+    For two features, the closed-form prediction this pathology exists to
+    let users verify is `VIF = 1 / (1 - rho**2)` for the collinear feature
+    (regressed on just `correlated_with`); `StressTest`/manual checks can
+    compare a fitted VIF against this.
+    """
+
+    def __init__(self, feature: str, correlated_with: str, correlation: float) -> None:
+        if not (0.0 <= correlation < 1.0):
+            raise ValueError(
+                f"correlation must be in [0, 1) -- got {correlation}. "
+                "correlation=1.0 (perfect collinearity) is disallowed; OLS is undefined "
+                "in that degenerate case rather than merely high-variance."
+            )
+        self.feature = feature
+        self.correlated_with = correlated_with
+        self.correlation = correlation
+
+    def generate_feature(
+        self,
+        correlated_with_values: np.ndarray,
+        rng: np.random.Generator,
+    ) -> np.ndarray:
+        """Generate the new collinear feature's values, standardizing
+        `correlated_with_values` internally so the target correlation is
+        achieved regardless of that column's own scale."""
+        z = correlated_with_values
+        std = z.std()
+        if std == 0:
+            raise ValueError(
+                f"Cannot generate a feature correlated with {self.correlated_with!r}: "
+                "that column has zero variance in the generated data."
+            )
+        z_standardized = (z - z.mean()) / std
+        epsilon = rng.normal(loc=0.0, scale=1.0, size=z.shape[0])
+        rho = self.correlation
+        new_feature: np.ndarray = rho * z_standardized + np.sqrt(1 - rho**2) * epsilon
+        return new_feature
+
+    def ground_truth_contribution(self) -> dict:
+        return {
+            "multicollinearity": [
+                MulticollinearityInfo(
+                    feature=self.feature,
+                    correlated_with=self.correlated_with,
+                    target_correlation=self.correlation,
+                )
+            ],
         }
 
 
