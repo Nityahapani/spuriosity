@@ -70,6 +70,28 @@ class MulticollinearityInfo:
 
 
 @dataclass(frozen=True)
+class MeasurementErrorInfo:
+    """Record of a single injected classical measurement error mechanism:
+    `feature`'s observed values are `true_value + noise`, where noise has
+    standard deviation `noise_std`. `reliability_ratio` is the closed-form
+    predicted attenuation factor for a naive regression coefficient on the
+    noisy observed feature, `Var(true) / (Var(true) + noise_std**2)`,
+    computed from the feature's *realized* variance in the generated
+    sample (not a theoretical value), so it reflects the actual data.
+    """
+
+    feature: str
+    noise_std: float
+    reliability_ratio: float
+
+    def __repr__(self) -> str:
+        return (
+            f"MeasurementErrorInfo(feature={self.feature!r}, noise_std={self.noise_std}, "
+            f"reliability_ratio={self.reliability_ratio:.4f})"
+        )
+
+
+@dataclass(frozen=True)
 class GroundTruth:
     """The true data-generating process behind a generated panel dataset.
 
@@ -89,6 +111,7 @@ class GroundTruth:
     selection_mechanism: Optional[SelectionInfo] = None
     heteroskedasticity: list[HeteroskedasticityInfo] = field(default_factory=list)
     multicollinearity: list[MulticollinearityInfo] = field(default_factory=list)
+    measurement_error: list[MeasurementErrorInfo] = field(default_factory=list)
     treatment_effect_ate: Optional[float] = None
     spuriosity_version: str = ""
     numpy_version: str = ""
@@ -124,6 +147,10 @@ class GroundTruth:
             parts.append(
                 f"  multicollinearity: {[(m.feature, m.correlated_with) for m in self.multicollinearity]}"
             )
+        if self.measurement_error:
+            parts.append(
+                f"  measurement_error: {[(m.feature, round(m.reliability_ratio, 3)) for m in self.measurement_error]}"
+            )
         if self.treatment_effect_ate is not None:
             parts.append(f"  treatment_effect_ate: {self.treatment_effect_ate:.4f}")
         parts.append(f"  has_true_cate: {self.true_cate is not None}")
@@ -143,6 +170,7 @@ class GroundTruth:
             ),
             "heteroskedasticity": [asdict(h) for h in self.heteroskedasticity],
             "multicollinearity": [asdict(m) for m in self.multicollinearity],
+            "measurement_error": [asdict(m) for m in self.measurement_error],
             "treatment_effect_ate": self.treatment_effect_ate,
             "spuriosity_version": self.spuriosity_version,
             "numpy_version": self.numpy_version,

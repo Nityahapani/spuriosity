@@ -14,6 +14,7 @@ from spuriosity.ground_truth import (
     BreakInfo,
     GroundTruth,
     HeteroskedasticityInfo,
+    MeasurementErrorInfo,
     MulticollinearityInfo,
     SelectionInfo,
 )
@@ -22,6 +23,7 @@ from spuriosity.metrics import MetricContext, MetricRegistry, default_registry
 from spuriosity.pathologies import (
     Confounder,
     Heteroskedasticity,
+    MeasurementError,
     Multicollinearity,
     Pathology,
     SelectionBias,
@@ -37,6 +39,7 @@ __all__ = [
     "SelectionInfo",
     "HeteroskedasticityInfo",
     "MulticollinearityInfo",
+    "MeasurementErrorInfo",
     "HTE",
     "reference",
     "StressTest",
@@ -53,4 +56,5 @@ __all__ = [
     "SelectionBias",
     "Heteroskedasticity",
     "Multicollinearity",
+    "MeasurementError",
 ]

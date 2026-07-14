@@ -15,7 +15,7 @@ Each Pathology subclass must:
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Literal
+from typing import Literal, Optional
 
 import numpy as np
 import pandas as pd
@@ -23,6 +23,7 @@ import pandas as pd
 from spuriosity.ground_truth import (
     BreakInfo,
     HeteroskedasticityInfo,
+    MeasurementErrorInfo,
     MulticollinearityInfo,
     SelectionInfo,
 )
@@ -434,6 +435,71 @@ class Multicollinearity(Pathology):
                     feature=self.feature,
                     correlated_with=self.correlated_with,
                     target_correlation=self.correlation,
+                )
+            ],
+        }
+
+
+class MeasurementError(Pathology):
+    """Injects classical measurement error into `feature`: the value that
+    ends up in the generated DataFrame is the true (already-drawn) value
+    plus independent Gaussian noise with standard deviation `noise_std`,
+    i.e. ``observed = true_value + N(0, noise_std**2)``.
+
+    Critically, the outcome is generated from the TRUE (pre-error) values
+    -- only the feature column visible in the final DataFrame is
+    corrupted, mirroring the realistic scenario where the underlying
+    construct that actually drives the outcome is measured imperfectly.
+    This is the mechanistic opposite of `Confounder` (which injects a
+    latent variable that the outcome also depends on): here, noise is
+    added purely to the *measurement* of an existing regressor, with no
+    effect on the outcome except through whatever the true (unobserved)
+    value would have contributed.
+
+    The classical result this pathology exists to let users verify: a
+    naive regression of the outcome on the *noisy* observed feature has
+    its coefficient attenuated toward zero by the reliability ratio
+    ``Var(true) / (Var(true) + noise_std**2)`` -- unlike confounding
+    (which inflates a coefficient) or a simple omitted variable, this
+    bias always pulls the estimate toward zero, never away from it.
+    """
+
+    def __init__(self, feature: str, noise_std: float) -> None:
+        if noise_std < 0:
+            raise ValueError(f"noise_std must be >= 0, got {noise_std}")
+        self.feature = feature
+        self.noise_std = noise_std
+        self._realized_reliability_ratio: Optional[float] = None
+
+    def apply(self, true_values: np.ndarray, rng: np.random.Generator) -> np.ndarray:
+        """Return the noisy observed values, and record the realized
+        reliability ratio (based on the true values' actual sample
+        variance) for ground-truth bookkeeping via
+        `ground_truth_contribution()`, which must be called only after
+        this method."""
+        true_variance = float(np.var(true_values))
+        if self.noise_std == 0:
+            self._realized_reliability_ratio = 1.0
+        else:
+            self._realized_reliability_ratio = true_variance / (true_variance + self.noise_std**2)
+
+        noise = rng.normal(loc=0.0, scale=self.noise_std, size=true_values.shape[0])
+        observed: np.ndarray = true_values + noise
+        return observed
+
+    def ground_truth_contribution(self) -> dict:
+        if self._realized_reliability_ratio is None:
+            raise RuntimeError(
+                "ground_truth_contribution() called before apply(); the realized reliability "
+                "ratio depends on the true values' sample variance, which is only known after "
+                "apply() has run."
+            )
+        return {
+            "measurement_error": [
+                MeasurementErrorInfo(
+                    feature=self.feature,
+                    noise_std=self.noise_std,
+                    reliability_ratio=self._realized_reliability_ratio,
                 )
             ],
         }

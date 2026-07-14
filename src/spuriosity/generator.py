@@ -35,6 +35,7 @@ from spuriosity.hte import HTE
 from spuriosity.pathologies import (
     Confounder,
     Heteroskedasticity,
+    MeasurementError,
     Multicollinearity,
     SelectionBias,
     StructuralBreak,
@@ -344,6 +345,21 @@ class PanelGenerator:
         )
         return self
 
+    def add_measurement_error(self, feature: str, noise_std: float) -> "PanelGenerator":
+        """Inject classical measurement error into `feature`: the outcome
+        is generated from the true (already-drawn) values, but the
+        `feature` column in the final DataFrame is replaced with
+        `true_value + N(0, noise_std**2)`.
+
+        `feature` must already be declared via `add_variable` (measurement
+        error models an existing regressor being observed imperfectly, not
+        a new column). See `spuriosity.pathologies.MeasurementError` for
+        the exact mechanism and the classical attenuation-bias result this
+        pathology lets users verify.
+        """
+        self._pathologies.append(MeasurementError(feature=feature, noise_std=noise_std))
+        return self
+
     def validate_combo(self) -> list[str]:
         """Check currently-added pathologies for likely conflicts.
 
@@ -616,6 +632,16 @@ class PanelGenerator:
         noise = noise_gen.normal(loc=0.0, scale=1.0, size=n_rows) * noise_std_per_row
         df[self._outcome.name] = mean_outcome + noise
 
+        measurement_errors = [p for p in self._pathologies if isinstance(p, MeasurementError)]
+        for me in measurement_errors:
+            if me.feature not in df.columns:
+                raise ValueError(
+                    f"MeasurementError references feature {me.feature!r}, which is not a "
+                    f"declared variable or treatment on this PanelGenerator."
+                )
+            me_gen = self._rng_manager.child(f"measurement_error:{me.feature}")
+            df[me.feature] = me.apply(df[me.feature].to_numpy(), me_gen)
+
         selection_biases = [p for p in self._pathologies if isinstance(p, SelectionBias)]
         for i, sel in enumerate(selection_biases):
             sel_gen = self._rng_manager.child(f"selection_bias:{i}:{sel.rule}")
@@ -660,6 +686,10 @@ class PanelGenerator:
         for mc in multicollinearities:
             multicollinearity_info.extend(mc.ground_truth_contribution()["multicollinearity"])
 
+        measurement_error_info = []
+        for me in measurement_errors:
+            measurement_error_info.extend(me.ground_truth_contribution()["measurement_error"])
+
         truth = GroundTruth(
             true_coefficients=true_coefficients,
             break_points=break_points,
@@ -668,6 +698,7 @@ class PanelGenerator:
             selection_mechanism=selection_mechanism,
             heteroskedasticity=heteroskedasticity_info,
             multicollinearity=multicollinearity_info,
+            measurement_error=measurement_error_info,
             treatment_effect_ate=treatment_effect_ate,
             spuriosity_version=_get_spuriosity_version(),
             numpy_version=np.__version__,

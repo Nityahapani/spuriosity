@@ -264,3 +264,32 @@ already claimed by an earlier `add_multicollinearity` call raises, and
 vice versa -- `_check_name_available` was extended to include
 multicollinearity-generated names in its taken-name set, closing a gap
 that existed only in one direction before this was added.
+
+### Measurement error pathology
+
+`PanelGenerator.add_measurement_error(feature, noise_std)` injects
+classical errors-in-variables into `feature` (which must already be
+declared): the outcome is generated from the TRUE (pre-error) values, but
+the `feature` column in the final DataFrame is replaced with
+`true_value + N(0, noise_std**2)`. This is the mechanistic mirror image of
+`Confounder` -- `Confounder` modifies a feature *before* the outcome reads
+it (so the corruption affects the true relationship); `MeasurementError`
+modifies it *after* (so only what's observable is corrupted, and the
+outcome's real dependence is on a value the researcher never actually
+sees).
+
+The classical result this pathology exists to let users verify: a naive
+regression of the outcome on the noisy *observed* feature has its
+coefficient attenuated toward zero by the reliability ratio
+`Var(true) / (Var(true) + noise_std**2)` -- the opposite direction of bias
+from confounding (which inflates a coefficient away from zero).
+`GroundTruth.measurement_error[i].reliability_ratio` reports the
+*realized* ratio (computed from the true values' actual sample variance,
+not a theoretical population value), so it reflects the specific generated
+dataset. Verified end-to-end: naive OLS on the corrupted feature matches
+the predicted attenuated coefficient to within 0.02 at n=1M, and a direct
+residual check confirms the outcome was built from the true pre-noise
+values (not the corrupted ones) by showing residuals computed using the
+*observed* feature retain variance on the order of the injected
+measurement noise itself, rather than the outcome's own (much smaller)
+noise term.
