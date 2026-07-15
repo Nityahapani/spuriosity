@@ -22,6 +22,7 @@ import pandas as pd
 
 from spuriosity.ground_truth import (
     BreakInfo,
+    EndogeneityInfo,
     HeteroskedasticityInfo,
     MeasurementErrorInfo,
     MulticollinearityInfo,
@@ -503,6 +504,126 @@ class MeasurementError(Pathology):
                 )
             ],
         }
+
+
+class Endogeneity(Pathology):
+    """Makes `feature` endogenous (correlated with the outcome's error
+    term) via a shared latent variable `u`, while also generating a valid
+    exogenous `instrument` column that can recover the true coefficient
+    via 2SLS/IV instead of naive OLS.
+
+    Mechanism, in generation order:
+
+        instrument ~ N(0, 1)                           [new column]
+        u ~ N(0, 1)                                     [latent, not exposed]
+        feature = instrument_strength * instrument + endogeneity_strength * u
+                  + N(0, first_stage_noise_std**2)       [replaces feature's prior values]
+        outcome_mean += endogeneity_strength * u         [added on top of the outcome DGP]
+
+    `u` leaking into both `feature` and the outcome is what makes `feature`
+    endogenous: naive OLS of outcome on `feature` is biased, because
+    `Cov(feature, u) != 0` and `u` also drives the outcome. `instrument`
+    is exogenous by construction (independent of `u`), so 2SLS using
+    `instrument` recovers the true coefficient.
+
+    `instrument_strength` is the first-stage coefficient -- how strongly
+    `instrument` drives `feature`. Deliberately setting this low (e.g.
+    0.05-0.1 relative to `endogeneity_strength`) generates data with a
+    *weak* instrument: 2SLS becomes both biased and highly imprecise, with
+    a low first-stage F-statistic (the standard weak-instrument
+    diagnostic) -- this is the "does my IV strategy survive a weak
+    instrument" stress test this pathology exists to support, not just
+    "does IV work when everything is textbook-strong."
+
+    `feature` must already be declared via `add_variable` (this pathology
+    replaces its values, mirroring `Confounder`'s convention, not
+    `Multicollinearity`'s "creates a new column" convention).
+    `instrument` must NOT already be declared -- it is created fresh.
+    """
+
+    def __init__(
+        self,
+        feature: str,
+        instrument: str,
+        instrument_strength: float,
+        endogeneity_strength: float,
+        first_stage_noise_std: float = 0.5,
+    ) -> None:
+        if first_stage_noise_std < 0:
+            raise ValueError(f"first_stage_noise_std must be >= 0, got {first_stage_noise_std}")
+        self.feature = feature
+        self.instrument = instrument
+        self.instrument_strength = instrument_strength
+        self.endogeneity_strength = endogeneity_strength
+        self.first_stage_noise_std = first_stage_noise_std
+        self._realized_f_stat: Optional[float] = None
+
+    def generate(
+        self, n_rows: int, rng: np.random.Generator
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Generate (instrument_values, feature_values, outcome_contribution).
+
+        `outcome_contribution` is `endogeneity_strength * u`, to be added
+        to the outcome mean by the caller (mirroring how `Confounder`
+        returns its outcome contribution separately rather than mutating
+        the outcome directly).
+        """
+        instrument_values = rng.normal(loc=0.0, scale=1.0, size=n_rows)
+        u = rng.normal(loc=0.0, scale=1.0, size=n_rows)
+        first_stage_noise = rng.normal(loc=0.0, scale=self.first_stage_noise_std, size=n_rows)
+
+        feature_values = (
+            self.instrument_strength * instrument_values
+            + self.endogeneity_strength * u
+            + first_stage_noise
+        )
+        outcome_contribution = self.endogeneity_strength * u
+
+        # Realized first-stage F-stat: F-test of instrument_strength == 0
+        # in a simple OLS of feature on instrument, computed on the actual
+        # generated sample (not a theoretical value) -- the standard
+        # weak-instrument diagnostic.
+        self._realized_f_stat = _first_stage_f_stat(instrument_values, feature_values)
+
+        return instrument_values, feature_values, outcome_contribution
+
+    def ground_truth_contribution(self) -> dict:
+        return {
+            "endogeneity": [
+                EndogeneityInfo(
+                    feature=self.feature,
+                    instrument=self.instrument,
+                    instrument_strength=self.instrument_strength,
+                    endogeneity_strength=self.endogeneity_strength,
+                    realized_first_stage_f_stat=self._realized_f_stat,
+                )
+            ],
+        }
+
+
+def _first_stage_f_stat(instrument_values: np.ndarray, feature_values: np.ndarray) -> float:
+    """F-statistic for the null that the instrument's coefficient is 0, in
+    a simple OLS regression of feature_values on instrument_values (plus
+    intercept). Computed directly via the standard F = t**2 relationship
+    for a single-regressor OLS, to avoid a statsmodels dependency inside
+    pathologies.py for what is otherwise a pure numpy module.
+    """
+    n = len(instrument_values)
+    x = instrument_values
+    y = feature_values
+    x_mean = x.mean()
+    y_mean = y.mean()
+    sxx = np.sum((x - x_mean) ** 2)
+    sxy = np.sum((x - x_mean) * (y - y_mean))
+    beta = sxy / sxx
+    intercept = y_mean - beta * x_mean
+    residuals = y - (intercept + beta * x)
+    rss = np.sum(residuals**2)
+    dof = n - 2
+    se_beta = np.sqrt(rss / dof / sxx)
+    t_stat = beta / se_beta
+    f_stat: float = float(t_stat**2)
+    return f_stat
 
 
 def validate_combo(pathologies: list[Pathology]) -> list[str]:

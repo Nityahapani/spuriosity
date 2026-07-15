@@ -92,6 +92,45 @@ class MeasurementErrorInfo:
 
 
 @dataclass(frozen=True)
+class EndogeneityInfo:
+    """Record of a single injected endogeneity mechanism: `feature` is
+    entangled with the outcome's error term via a shared latent variable,
+    and `instrument` is the exogenous instrument that can be used to
+    recover the true coefficient via 2SLS/IV instead of naive OLS.
+
+    `instrument_strength` is the first-stage coefficient (how strongly the
+    instrument drives the endogenous feature); `endogeneity_strength` is
+    how strongly the shared latent error leaks into both the feature and
+    the outcome (i.e. the severity of the OLS bias this pathology
+    induces). `realized_first_stage_f_stat`, if computed (see
+    `Endogeneity.ground_truth_contribution`), is the standard
+  weak-instrument diagnostic (first-stage F-statistic on the instrument's
+    coefficient) for the actual generated sample -- values below the
+    classic Stock-Yogo rule-of-thumb of 10 indicate a weak instrument for
+    that specific dataset.
+    """
+
+    feature: str
+    instrument: str
+    instrument_strength: float
+    endogeneity_strength: float
+    realized_first_stage_f_stat: Optional[float] = None
+
+    def __repr__(self) -> str:
+        f_stat_str = (
+            f"{self.realized_first_stage_f_stat:.1f}"
+            if self.realized_first_stage_f_stat is not None
+            else "None"
+        )
+        return (
+            f"EndogeneityInfo(feature={self.feature!r}, instrument={self.instrument!r}, "
+            f"instrument_strength={self.instrument_strength}, "
+            f"endogeneity_strength={self.endogeneity_strength}, "
+            f"realized_first_stage_f_stat={f_stat_str})"
+        )
+
+
+@dataclass(frozen=True)
 class GroundTruth:
     """The true data-generating process behind a generated panel dataset.
 
@@ -112,6 +151,7 @@ class GroundTruth:
     heteroskedasticity: list[HeteroskedasticityInfo] = field(default_factory=list)
     multicollinearity: list[MulticollinearityInfo] = field(default_factory=list)
     measurement_error: list[MeasurementErrorInfo] = field(default_factory=list)
+    endogeneity: list[EndogeneityInfo] = field(default_factory=list)
     treatment_effect_ate: Optional[float] = None
     spuriosity_version: str = ""
     numpy_version: str = ""
@@ -151,6 +191,10 @@ class GroundTruth:
             parts.append(
                 f"  measurement_error: {[(m.feature, round(m.reliability_ratio, 3)) for m in self.measurement_error]}"
             )
+        if self.endogeneity:
+            parts.append(
+                f"  endogeneity: {[(e.feature, e.instrument) for e in self.endogeneity]}"
+            )
         if self.treatment_effect_ate is not None:
             parts.append(f"  treatment_effect_ate: {self.treatment_effect_ate:.4f}")
         parts.append(f"  has_true_cate: {self.true_cate is not None}")
@@ -171,6 +215,7 @@ class GroundTruth:
             "heteroskedasticity": [asdict(h) for h in self.heteroskedasticity],
             "multicollinearity": [asdict(m) for m in self.multicollinearity],
             "measurement_error": [asdict(m) for m in self.measurement_error],
+            "endogeneity": [asdict(e) for e in self.endogeneity],
             "treatment_effect_ate": self.treatment_effect_ate,
             "spuriosity_version": self.spuriosity_version,
             "numpy_version": self.numpy_version,

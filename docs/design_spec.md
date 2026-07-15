@@ -293,3 +293,59 @@ values (not the corrupted ones) by showing residuals computed using the
 *observed* feature retain variance on the order of the injected
 measurement noise itself, rather than the outcome's own (much smaller)
 noise term.
+
+### Endogeneity/IV pathology + IV/2SLS reference fit
+
+`PanelGenerator.add_endogeneity(feature, instrument, instrument_strength, endogeneity_strength, first_stage_noise_std=0.5)`
+makes `feature` endogenous (correlated with the outcome's error term via a
+shared latent variable `u`) and generates a new, exogenous `instrument`
+column, mirroring the standard textbook IV construction:
+
+```
+instrument ~ N(0, 1)                                     [new column]
+u ~ N(0, 1)                                                [latent]
+feature = instrument_strength*instrument + endogeneity_strength*u + noise
+outcome_mean += endogeneity_strength*u
+```
+
+`feature` must already be declared (its values are replaced, matching
+`Confounder`'s convention); `instrument` must NOT already be declared (it
+is created fresh, matching `Multicollinearity`'s convention). Both
+directions of name-collision checking apply, same bidirectional pattern
+established for `Multicollinearity`.
+
+`instrument_strength` set low relative to `endogeneity_strength`
+generates a *weak* instrument on purpose -- this is the more interesting
+stress-test case than "IV always works." `GroundTruth.endogeneity[i]`
+exposes `realized_first_stage_f_stat` (the standard weak-instrument
+diagnostic, computed on the actual generated sample via a hand-rolled OLS
+F-test verified to match `statsmodels`' `.fvalue` to 6 decimal places),
+so users can check whether their generated dataset crosses the classic
+Stock-Yogo rule-of-thumb threshold of 10.
+
+Paired reference fit: `spuriosity.reference.iv2sls_fit` /
+`iv2sls_predict`, using `linearmodels.iv.IV2SLS` (new optional dependency,
+`pip install spuriosity[linearmodels]`, lazy-imported with a clear
+`ImportError` if missing, following the same pattern as `doubleml_fit`).
+Also ships `reference.first_stage_f_stat(data, endogenous, instruments)`,
+a `statsmodels`-only convenience (no `linearmodels` required) for
+diagnosing instrument strength independent of fitting a full 2SLS model.
+
+Note: `linearmodels` uses `"const"` as its intercept column name, while
+`GroundTruth.true_coefficients` and the rest of `spuriosity.reference`
+use patsy/statsmodels' `"Intercept"` convention. These are not currently
+reconciled automatically -- `coef_rmse` still works correctly since it
+only compares keys present in both dicts (so the differently-named
+intercept term is simply excluded from that particular comparison, not a
+source of a wrong value), but this is a known rough edge worth revisiting
+if `linearmodels`-based fits become more central to the toolbox.
+
+Verified end-to-end through the real API: naive OLS on the endogenous
+feature is meaningfully biased (>0.3 off truth at n=500k); 2SLS via
+`iv2sls_fit` recovers the true coefficient to within 0.02; a deliberately
+weak instrument (`instrument_strength=0.01`) produces a realized F-stat
+of ~2.5 (well below the weak-instrument threshold) and a 2SLS estimate
+with standard error an order of magnitude larger than under a strong
+instrument -- confirming the pathology genuinely produces the "IV
+strategy becomes unreliable" failure mode, not just "IV works when
+everything is textbook-strong."

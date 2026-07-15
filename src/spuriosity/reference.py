@@ -34,12 +34,20 @@ class FitResult:
     (e.g. a black-box ML estimator used inside DoubleML) may leave
     `coefficients` sparse or empty and rely on `.raw_model` /
     `.ate_estimate` instead.
+
+    `extra` is free-form metadata a specific fit function needs to support
+    later operations on this result (e.g. `iv2sls_fit` stashes the
+    exog/endog column layout here, since `iv2sls_predict` needs it and
+    linearmodels' `predict()` API requires those passed as separate frames
+    rather than a single merged one). Not part of the uniform contract
+    other reference fits rely on -- treat contents as fit-function-specific.
     """
 
     coefficients: dict[str, float] = field(default_factory=dict)
     raw_model: Any = None
     ate_estimate: Optional[float] = None
     ate_std_error: Optional[float] = None
+    extra: dict[str, Any] = field(default_factory=dict)
 
 
 # ----------------------------------------------------------------------
@@ -208,3 +216,101 @@ def logit_predict(fit_result: FitResult, data: pd.DataFrame) -> np.ndarray:
     """Returns predicted probabilities (not hard class labels)."""
     predictions: np.ndarray = np.asarray(fit_result.raw_model.predict(data))
     return predictions
+
+
+# ----------------------------------------------------------------------
+# IV / 2SLS (optional dependency: linearmodels)
+# ----------------------------------------------------------------------
+
+
+def iv2sls_fit(
+    data: pd.DataFrame,
+    outcome: str,
+    endogenous: list[str],
+    instruments: list[str],
+    exogenous: Optional[list[str]] = None,
+) -> FitResult:
+    """Fit two-stage least squares (2SLS) via `linearmodels.iv.IV2SLS`, to
+    recover a coefficient on `endogenous` features despite their
+    correlation with the outcome's error term, using `instruments` as the
+    excluded instrument(s).
+
+    Requires the optional `linearmodels` dependency
+    (``pip install spuriosity[linearmodels]``); raises a clear
+    `ImportError` with installation instructions if not available.
+
+    `exogenous`, if given, are additional regressors included directly
+    (not instrumented) -- e.g. control variables the researcher trusts are
+    exogenous. An intercept is always included automatically under the
+    column name `"const"` (linearmodels' own convention -- note this
+    differs from the `"Intercept"` key patsy/statsmodels use elsewhere in
+    `spuriosity.reference`; the two are not currently reconciled
+    automatically when diffing against `GroundTruth.true_coefficients`).
+    """
+    try:
+        from linearmodels.iv import IV2SLS
+    except ImportError as e:
+        raise ImportError(
+            "iv2sls_fit requires the optional 'linearmodels' dependency. "
+            "Install it with: pip install spuriosity[linearmodels]"
+        ) from e
+
+    exogenous = exogenous or []
+    df = data.copy()
+    df["const"] = 1.0
+    exog_cols = ["const"] + exogenous
+
+    model = IV2SLS(
+        dependent=df[outcome],
+        exog=df[exog_cols],
+        endog=df[endogenous],
+        instruments=df[instruments],
+    )
+    fitted = model.fit()
+    coefficients = fitted.params.to_dict()
+    # Stash the column layout needed to call .predict() correctly later --
+    # linearmodels requires exog/endog passed as separate frames, not a
+    # single merged one, so iv2sls_predict needs to know the split.
+    return FitResult(
+        coefficients=coefficients,
+        raw_model=fitted,
+        extra={"exog_cols": exog_cols, "endog_cols": list(endogenous)},
+    )
+
+
+def iv2sls_predict(fit_result: FitResult, data: pd.DataFrame) -> np.ndarray:
+    """Predict fitted values using the 2SLS model's estimated coefficients
+    applied to `data`. Requires `fit_result` to have been produced by
+    `iv2sls_fit` (uses column layout stashed in `.extra`, since
+    linearmodels' `.predict()` needs exog/endog passed as separate
+    frames)."""
+    model = fit_result.raw_model
+    exog_cols = fit_result.extra.get("exog_cols")
+    endog_cols = fit_result.extra.get("endog_cols")
+    if exog_cols is None or endog_cols is None:
+        raise ValueError(
+            "iv2sls_predict requires a FitResult produced by iv2sls_fit "
+            "(missing column layout metadata in .extra)."
+        )
+    df = data.copy()
+    df["const"] = 1.0
+    predictions = model.predict(exog=df[exog_cols], endog=df[endog_cols])
+    return np.asarray(predictions.to_numpy().ravel())
+
+
+def first_stage_f_stat(data: pd.DataFrame, endogenous: str, instruments: list[str]) -> float:
+    """Compute the first-stage F-statistic (the standard weak-instrument
+    diagnostic) for regressing `endogenous` on `instruments` plus an
+    intercept, via statsmodels OLS. Values below ~10 (the classic
+    Stock-Yogo rule of thumb) indicate a weak instrument on this sample.
+
+    This is a convenience wrapper around a plain OLS F-test -- it does not
+    require `linearmodels`, only `statsmodels` (already a core dependency),
+    so it can be used to diagnose instrument strength even without fitting
+    a full 2SLS model.
+    """
+    df = data.copy()
+    formula = f"{endogenous} ~ " + " + ".join(instruments)
+    model = smf.ols(formula, data=df).fit()
+    f_stat: float = float(model.fvalue)
+    return f_stat

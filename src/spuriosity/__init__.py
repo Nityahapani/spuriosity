@@ -12,6 +12,7 @@ from spuriosity import reference
 from spuriosity.generator import PanelGenerator
 from spuriosity.ground_truth import (
     BreakInfo,
+    EndogeneityInfo,
     GroundTruth,
     HeteroskedasticityInfo,
     MeasurementErrorInfo,
@@ -22,6 +23,7 @@ from spuriosity.hte import HTE
 from spuriosity.metrics import MetricContext, MetricRegistry, default_registry
 from spuriosity.pathologies import (
     Confounder,
+    Endogeneity,
     Heteroskedasticity,
     MeasurementError,
     Multicollinearity,
@@ -40,6 +42,7 @@ __all__ = [
     "HeteroskedasticityInfo",
     "MulticollinearityInfo",
     "MeasurementErrorInfo",
+    "EndogeneityInfo",
     "HTE",
     "reference",
     "StressTest",
@@ -57,4 +60,5 @@ __all__ = [
     "Heteroskedasticity",
     "Multicollinearity",
     "MeasurementError",
+    "Endogeneity",
 ]

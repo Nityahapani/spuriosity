@@ -34,6 +34,7 @@ from spuriosity.ground_truth import GroundTruth
 from spuriosity.hte import HTE
 from spuriosity.pathologies import (
     Confounder,
+    Endogeneity,
     Heteroskedasticity,
     MeasurementError,
     Multicollinearity,
@@ -360,6 +361,43 @@ class PanelGenerator:
         self._pathologies.append(MeasurementError(feature=feature, noise_std=noise_std))
         return self
 
+    def add_endogeneity(
+        self,
+        feature: str,
+        instrument: str,
+        instrument_strength: float,
+        endogeneity_strength: float,
+        first_stage_noise_std: float = 0.5,
+    ) -> "PanelGenerator":
+        """Make `feature` endogenous (correlated with the outcome's error
+        term via a shared latent variable) and generate a new, exogenous
+        `instrument` column that can recover the true coefficient via
+        2SLS/IV.
+
+        `feature` must already be declared via `add_variable` -- this
+        pathology REPLACES its values entirely (mirroring `Confounder`'s
+        convention). `instrument` must NOT already be declared -- it is
+        created fresh (mirroring `Multicollinearity`'s convention).
+
+        `instrument_strength` low relative to `endogeneity_strength`
+        generates a *weak* instrument (2SLS becomes biased and imprecise,
+        with a low first-stage F-statistic); see
+        `spuriosity.pathologies.Endogeneity` for the full mechanism and
+        the standard weak-instrument diagnostics this pathology's ground
+        truth exposes.
+        """
+        self._check_name_available(instrument)
+        self._pathologies.append(
+            Endogeneity(
+                feature=feature,
+                instrument=instrument,
+                instrument_strength=instrument_strength,
+                endogeneity_strength=endogeneity_strength,
+                first_stage_noise_std=first_stage_noise_std,
+            )
+        )
+        return self
+
     def validate_combo(self) -> list[str]:
         """Check currently-added pathologies for likely conflicts.
 
@@ -449,6 +487,9 @@ class PanelGenerator:
             taken.add(self._outcome.name)
         taken.update(
             p.feature for p in self._pathologies if isinstance(p, Multicollinearity)
+        )
+        taken.update(
+            p.instrument for p in self._pathologies if isinstance(p, Endogeneity)
         )
         if name in taken:
             raise ValueError(f"Name {name!r} is already in use")
@@ -556,8 +597,22 @@ class PanelGenerator:
             if conf.observed:
                 df[f"_confounder_{conf.feature}"] = u
 
+        endogeneities = [p for p in self._pathologies if isinstance(p, Endogeneity)]
+        endogeneity_outcome_contribution = np.zeros(n_rows, dtype=float)
+        for endo in endogeneities:
+            if endo.feature not in df.columns:
+                raise ValueError(
+                    f"Endogeneity targets feature {endo.feature!r}, which is not a declared "
+                    f"variable or treatment on this PanelGenerator."
+                )
+            endo_gen = self._rng_manager.child(f"endogeneity:{endo.feature}")
+            instrument_values, feature_values, contribution = endo.generate(n_rows, endo_gen)
+            df[endo.instrument] = instrument_values
+            df[endo.feature] = feature_values
+            endogeneity_outcome_contribution = endogeneity_outcome_contribution + contribution
+
         mean_outcome, design = self._compute_outcome_mean(df)
-        mean_outcome = mean_outcome + confounder_outcome_contribution
+        mean_outcome = mean_outcome + confounder_outcome_contribution + endogeneity_outcome_contribution
 
         true_cate_fn = None
         if self._hte is not None:
@@ -690,6 +745,10 @@ class PanelGenerator:
         for me in measurement_errors:
             measurement_error_info.extend(me.ground_truth_contribution()["measurement_error"])
 
+        endogeneity_info = []
+        for endo in endogeneities:
+            endogeneity_info.extend(endo.ground_truth_contribution()["endogeneity"])
+
         truth = GroundTruth(
             true_coefficients=true_coefficients,
             break_points=break_points,
@@ -699,6 +758,7 @@ class PanelGenerator:
             heteroskedasticity=heteroskedasticity_info,
             multicollinearity=multicollinearity_info,
             measurement_error=measurement_error_info,
+            endogeneity=endogeneity_info,
             treatment_effect_ate=treatment_effect_ate,
             spuriosity_version=_get_spuriosity_version(),
             numpy_version=np.__version__,
