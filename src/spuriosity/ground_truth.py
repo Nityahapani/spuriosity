@@ -131,6 +131,28 @@ class EndogeneityInfo:
 
 
 @dataclass(frozen=True)
+class UnitRootInfo:
+    """Record of a single injected unit-root (random walk) mechanism:
+    `feature`'s values were converted from i.i.d. draws into a random walk
+    (cumulative sum of increments), optionally with a constant `drift`
+    added at each step. This makes `feature` nonstationary -- its variance
+    grows with the time index rather than being constant -- which breaks
+    standard OLS inference and can produce "spurious regression": an
+    apparently significant relationship between two variables that are in
+    fact causally unrelated, purely because both are trending/wandering
+    random walks. See `spuriosity.pathologies.UnitRoot` for the mechanism
+    and the verified spurious-regression false-positive-rate inflation
+    this pathology reproduces.
+    """
+
+    feature: str
+    drift: float
+
+    def __repr__(self) -> str:
+        return f"UnitRootInfo(feature={self.feature!r}, drift={self.drift})"
+
+
+@dataclass(frozen=True)
 class GroundTruth:
     """The true data-generating process behind a generated panel dataset.
 
@@ -152,6 +174,7 @@ class GroundTruth:
     multicollinearity: list[MulticollinearityInfo] = field(default_factory=list)
     measurement_error: list[MeasurementErrorInfo] = field(default_factory=list)
     endogeneity: list[EndogeneityInfo] = field(default_factory=list)
+    unit_root: list[UnitRootInfo] = field(default_factory=list)
     treatment_effect_ate: Optional[float] = None
     spuriosity_version: str = ""
     numpy_version: str = ""
@@ -195,6 +218,8 @@ class GroundTruth:
             parts.append(
                 f"  endogeneity: {[(e.feature, e.instrument) for e in self.endogeneity]}"
             )
+        if self.unit_root:
+            parts.append(f"  unit_root: {[u.feature for u in self.unit_root]}")
         if self.treatment_effect_ate is not None:
             parts.append(f"  treatment_effect_ate: {self.treatment_effect_ate:.4f}")
         parts.append(f"  has_true_cate: {self.true_cate is not None}")
@@ -216,6 +241,7 @@ class GroundTruth:
             "multicollinearity": [asdict(m) for m in self.multicollinearity],
             "measurement_error": [asdict(m) for m in self.measurement_error],
             "endogeneity": [asdict(e) for e in self.endogeneity],
+            "unit_root": [asdict(u) for u in self.unit_root],
             "treatment_effect_ate": self.treatment_effect_ate,
             "spuriosity_version": self.spuriosity_version,
             "numpy_version": self.numpy_version,

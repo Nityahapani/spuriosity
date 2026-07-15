@@ -349,3 +349,36 @@ with standard error an order of magnitude larger than under a strong
 instrument -- confirming the pathology genuinely produces the "IV
 strategy becomes unreliable" failure mode, not just "IV works when
 everything is textbook-strong."
+
+### Unit root pathology
+
+`PanelGenerator.add_unit_root(feature, drift=0.0)` converts `feature` from
+i.i.d. draws into a random walk (with optional drift), reusing the same
+underlying values `add_variable` already drew as increments rather than
+generating fresh noise. Unlike every other pathology in v2, this one
+operates on the full panel structure (`UnitRoot.apply_to_panel(df)` takes
+the whole DataFrame, not a flat array), since the cumulative sum must
+reset independently at each entity boundary -- verified with a dedicated
+row-order-preservation test in addition to the basic per-entity cumsum
+correctness check.
+
+Two verified statistical properties:
+
+1. **Formal nonstationarity**: the Augmented Dickey-Fuller test fails to
+   reject the unit-root null for a generated random-walk series
+   (p > 0.1), while correctly rejecting it for an otherwise-identical
+   i.i.d. series (p < 0.05) -- both checked via `statsmodels.tsa.stattools.adfuller`
+   on real generated data, not a synthesized array.
+
+2. **Spurious regression** (the Granger-Newbold 1974 result): OLS between
+   two *independent* unit-root series shows a "significant" coefficient
+   (p < 0.05) far more often than the nominal significance level implies.
+   Verified end-to-end through the real `PanelGenerator` API across many
+   independent simulated datasets: ~76% false-positive rate for
+   independent random walks vs. ~6% for independent i.i.d. series (close
+   to the nominal 5%), reproduced as a permanent test
+   (`test_spurious_regression_false_positive_rate_inflated`) rather than
+   a one-off validation script. This is the most striking and
+   pedagogically important result this pathology reproduces -- it's the
+   textbook demonstration of why nonstationary time series need
+   differencing/cointegration analysis rather than naive OLS.

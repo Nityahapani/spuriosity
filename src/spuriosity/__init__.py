@@ -18,6 +18,7 @@ from spuriosity.ground_truth import (
     MeasurementErrorInfo,
     MulticollinearityInfo,
     SelectionInfo,
+    UnitRootInfo,
 )
 from spuriosity.hte import HTE
 from spuriosity.metrics import MetricContext, MetricRegistry, default_registry
@@ -30,6 +31,7 @@ from spuriosity.pathologies import (
     Pathology,
     SelectionBias,
     StructuralBreak,
+    UnitRoot,
 )
 from spuriosity.stress_test import ComparisonReport, StressTest, StressTestReport, compare_models
 from spuriosity.viz import plot_recovery_report
@@ -43,6 +45,7 @@ __all__ = [
     "MulticollinearityInfo",
     "MeasurementErrorInfo",
     "EndogeneityInfo",
+    "UnitRootInfo",
     "HTE",
     "reference",
     "StressTest",
@@ -61,4 +64,5 @@ __all__ = [
     "Multicollinearity",
     "MeasurementError",
     "Endogeneity",
+    "UnitRoot",
 ]

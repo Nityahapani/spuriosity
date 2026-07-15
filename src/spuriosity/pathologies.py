@@ -27,6 +27,7 @@ from spuriosity.ground_truth import (
     MeasurementErrorInfo,
     MulticollinearityInfo,
     SelectionInfo,
+    UnitRootInfo,
 )
 
 _STRUCTURAL_BREAK_KINDS = ("mean_shift", "variance_shift", "coefficient_shift")
@@ -624,6 +625,70 @@ def _first_stage_f_stat(instrument_values: np.ndarray, feature_values: np.ndarra
     t_stat = beta / se_beta
     f_stat: float = float(t_stat**2)
     return f_stat
+
+
+class UnitRoot(Pathology):
+    """Converts `feature` from i.i.d. draws into a random walk (with
+    optional drift), making it nonstationary: variance grows with the
+    time index rather than being constant, which breaks standard OLS
+    inference and can produce "spurious regression" -- an apparently
+    significant relationship between two variables that are in fact
+    causally unrelated, purely because both wander/trend over time.
+
+    Mechanism: within each entity's own time series (never crossing
+    entity boundaries in a panel), `feature`'s already-drawn i.i.d. values
+    are treated as increments and cumulatively summed:
+
+        feature_t = feature_0 + sum_{s=1}^{t} (increment_s + drift)
+
+    i.e. the random walk is built from the SAME underlying draws
+    `add_variable` already produced for `feature` (reusing them as
+    increments rather than drawing fresh noise), so the only thing this
+    pathology changes is the cumulative-sum transformation and the
+    optional additive `drift` term at each step.
+
+    `drift`, if nonzero, adds a deterministic trend on top of the random
+    walk (a "random walk with drift") -- still nonstationary, but with a
+    systematic directional component in addition to the wandering.
+
+    This pathology operates on the full panel structure (it needs each
+    entity's own time ordering to build a per-entity cumulative sum), so
+    `apply_to_panel` takes the whole DataFrame rather than a flat array,
+    unlike most other pathologies in this module.
+    """
+
+    def __init__(self, feature: str, drift: float = 0.0) -> None:
+        self.feature = feature
+        self.drift = drift
+
+    def apply_to_panel(
+        self, df: pd.DataFrame, entity_col: str = "entity_id", period_col: str = "period"
+    ) -> np.ndarray:
+        """Return the feature column converted to a per-entity random walk
+        with drift, preserving the DataFrame's row order. `df` must
+        already contain `self.feature`, `entity_col`, and `period_col`,
+        and rows are assumed sorted by (entity, period) within each
+        entity's block -- true for any DataFrame produced by
+        `PanelGenerator.generate()`.
+        """
+        if self.feature not in df.columns:
+            raise ValueError(
+                f"UnitRoot references feature {self.feature!r}, which is not present in the data."
+            )
+        increments = df[self.feature].to_numpy() + self.drift
+        # groupby.cumsum() resets the cumulative sum at each entity
+        # boundary, which is exactly the per-entity random walk semantics
+        # this pathology needs -- verified against a hand-built loop
+        # during development.
+        walk: np.ndarray = (
+            pd.Series(increments, index=df.index).groupby(df[entity_col]).cumsum().to_numpy()
+        )
+        return walk
+
+    def ground_truth_contribution(self) -> dict:
+        return {
+            "unit_root": [UnitRootInfo(feature=self.feature, drift=self.drift)],
+        }
 
 
 def validate_combo(pathologies: list[Pathology]) -> list[str]:

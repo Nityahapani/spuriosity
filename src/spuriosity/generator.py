@@ -40,6 +40,7 @@ from spuriosity.pathologies import (
     Multicollinearity,
     SelectionBias,
     StructuralBreak,
+    UnitRoot,
     validate_combo as _validate_combo,
 )
 
@@ -398,6 +399,22 @@ class PanelGenerator:
         )
         return self
 
+    def add_unit_root(self, feature: str, drift: float = 0.0) -> "PanelGenerator":
+        """Convert `feature` from i.i.d. draws into a random walk
+        (cumulative sum, per entity, of its already-drawn values), making
+        it nonstationary. Optional `drift` adds a deterministic trend on
+        top ("random walk with drift").
+
+        `feature` must already be declared via `add_variable`. See
+        `spuriosity.pathologies.UnitRoot` for the exact mechanism and the
+        classic "spurious regression" result this pathology reproduces
+        (an apparently significant relationship between two independent
+        random walks, at a false-positive rate far above the nominal
+        significance level).
+        """
+        self._pathologies.append(UnitRoot(feature=feature, drift=drift))
+        return self
+
     def validate_combo(self) -> list[str]:
         """Check currently-added pathologies for likely conflicts.
 
@@ -558,6 +575,15 @@ class PanelGenerator:
             data[var_name] = self._draw_variable(spec, n_rows)
 
         df = pd.DataFrame(data)
+
+        unit_roots = [p for p in self._pathologies if isinstance(p, UnitRoot)]
+        for ur in unit_roots:
+            if ur.feature not in df.columns:
+                raise ValueError(
+                    f"UnitRoot references feature {ur.feature!r}, which is not a declared "
+                    f"variable on this PanelGenerator."
+                )
+            df[ur.feature] = ur.apply_to_panel(df)
 
         if self._treatment is not None:
             df[self._treatment.name] = self._draw_treatment(n_rows, entity_ids, periods)
@@ -749,6 +775,10 @@ class PanelGenerator:
         for endo in endogeneities:
             endogeneity_info.extend(endo.ground_truth_contribution()["endogeneity"])
 
+        unit_root_info = []
+        for ur in unit_roots:
+            unit_root_info.extend(ur.ground_truth_contribution()["unit_root"])
+
         truth = GroundTruth(
             true_coefficients=true_coefficients,
             break_points=break_points,
@@ -759,6 +789,7 @@ class PanelGenerator:
             multicollinearity=multicollinearity_info,
             measurement_error=measurement_error_info,
             endogeneity=endogeneity_info,
+            unit_root=unit_root_info,
             treatment_effect_ate=treatment_effect_ate,
             spuriosity_version=_get_spuriosity_version(),
             numpy_version=np.__version__,
