@@ -1,12 +1,13 @@
 """Tests for spuriosity.reference panel FE/RE fits and hausman_test.
 
 These construct the classic "entity effect correlated with regressor"
-scenario by hand (spuriosity does not yet have a dedicated pathology for
-injecting a time-invariant panel entity effect -- a natural follow-up),
-then verify FE recovers the truth while RE is biased, and that the
-Hausman test correctly flags this in the biased case and correctly does
-not flag it when entity effects are genuinely uncorrelated with the
-regressor.
+scenario by hand. This is a DIFFERENT gap from the one closed by
+add_treatment(assignment="propensity") (see test_propensity_treatment.py
+and the now-refactored test_psm.py) -- that closes covariate-dependent
+BINARY TREATMENT assignment, whereas what's needed here is a
+time-invariant per-entity RANDOM EFFECT added to a continuous
+covariate/outcome, which spuriosity still has no dedicated pathology for.
+Left as a distinct, still-open follow-up (see docs/design_spec.md).
 """
 
 from __future__ import annotations

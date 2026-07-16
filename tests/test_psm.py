@@ -1,11 +1,10 @@
 """Tests for spuriosity.reference.psm_fit / psm_predict.
 
 The PSM test scenario (a confounded binary treatment where propensity
-depends on an observed covariate) is constructed by hand on top of
-spuriosity-generated data, since spuriosity does not yet have a dedicated
-pathology for generating a covariate-dependent binary treatment
-assignment (add_treatment's "random" assignment is independent of
-covariates by design) -- a natural candidate for a future pathology.
+depends on an observed covariate) uses PanelGenerator's
+add_treatment(assignment="propensity", ...), which closes what was
+previously a gap requiring manual post-hoc construction of a confounded
+treatment column.
 """
 
 from __future__ import annotations
@@ -16,21 +15,20 @@ import pytest
 from spuriosity import PanelGenerator, reference
 from spuriosity.reference import FitResult
 
+TRUE_ATE = 3.0
+
 
 def _confounded_treatment_data(n: int = 100_000, seed: int = 42, propensity_strength: float = 0.8):
-    rng = np.random.default_rng(seed)
     gen = PanelGenerator(n_entities=n, n_periods=1, seed=seed)
     gen.add_variable("x1", dist="normal", mean=0, std=1)
-    gen.set_outcome(fn=lambda x1: 2.0 * x1, noise_std=0.5)
+    gen.add_treatment(
+        "treat", assignment="propensity", propensity_formula=f"{propensity_strength}*x1"
+    )
+    gen.set_outcome(
+        formula="x1 + treat", coefficients={"x1": 2.0, "treat": TRUE_ATE}, noise_std=0.5
+    )
     df, truth = gen.generate()
-
-    propensity_true = 1 / (1 + np.exp(-(propensity_strength * df["x1"].to_numpy())))
-    treat = (rng.random(n) < propensity_true).astype(int)
-    df = df.copy()
-    df["treat"] = treat
-    true_ate = 3.0
-    df["y"] = df["y"] + true_ate * df["treat"]
-    return df, true_ate
+    return df, TRUE_ATE
 
 
 # ----------------------------------------------------------------------

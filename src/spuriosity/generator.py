@@ -57,9 +57,10 @@ class _VariableSpec:
 @dataclass
 class _TreatmentSpec:
     name: str
-    assignment: Literal["random"]
+    assignment: Literal["random", "propensity"]
     start_period: int
     propensity: float
+    propensity_formula: Optional[str] = None
 
 
 @dataclass
@@ -148,6 +149,7 @@ class PanelGenerator:
         assignment: str = "random",
         start_period: int = 0,
         propensity: float = 0.5,
+        propensity_formula: Optional[str] = None,
     ) -> "PanelGenerator":
         """Declare a binary treatment indicator.
 
@@ -158,26 +160,53 @@ class PanelGenerator:
         Parameters
         ----------
         assignment:
-            Currently only ``"random"`` is supported: each entity is
-            independently treated with probability ``propensity``.
+            ``"random"``: each entity is independently treated with
+            probability ``propensity``, independent of any covariate.
+
+            ``"propensity"``: each entity's treatment probability is
+            ``sigmoid(propensity_formula)``, evaluated once per entity
+            using that entity's covariate values at period 0 (covariates
+            are drawn per-row, but treatment assignment here is
+            deliberately entity-level and time-invariant, matching how
+            treatment is drawn everywhere else in `PanelGenerator`). This
+            is the standard "confounded/selection-on-observables binary
+            treatment" DGP needed to properly test propensity score
+            matching, panel FE-vs-RE bias, and similar methods --
+            `propensity_formula` may reference any variable declared via
+            `add_variable` (a `pandas.eval`-evaluated expression, e.g.
+            ``"0.8*x1"``; see CONTRIBUTING.md for the security stance
+            shared with `add_selection_bias`/`add_hte`).
         start_period:
             First period (0-indexed) in which treatment takes effect for
             treated entities. Must be < n_periods.
         propensity:
             Probability an entity is treated, for ``assignment="random"``.
+            Ignored for ``assignment="propensity"``.
+        propensity_formula:
+            Required for, and only used by, ``assignment="propensity"``.
         """
         self._check_name_available(name)
-        if assignment != "random":
-            raise ValueError(f"Unsupported assignment {assignment!r}; only 'random' is supported in v1")
+        if assignment not in ("random", "propensity"):
+            raise ValueError(
+                f"Unsupported assignment {assignment!r}; supported: 'random', 'propensity'"
+            )
         if not (0 <= start_period < self.n_periods):
             raise ValueError(
                 f"start_period must be in [0, n_periods)=[0, {self.n_periods}), got {start_period}"
             )
-        if not (0.0 <= propensity <= 1.0):
-            raise ValueError(f"propensity must be in [0, 1], got {propensity}")
+        if assignment == "random":
+            if not (0.0 <= propensity <= 1.0):
+                raise ValueError(f"propensity must be in [0, 1], got {propensity}")
+        elif assignment == "propensity":
+            if propensity_formula is None:
+                raise ValueError("propensity_formula is required when assignment='propensity'")
 
         self._treatment = _TreatmentSpec(
-            name=name, assignment="random", start_period=start_period, propensity=propensity
+            name=name,
+            assignment=assignment,  # type: ignore[arg-type]
+            start_period=start_period,
+            propensity=propensity,
+            propensity_formula=propensity_formula,
         )
         return self
 
@@ -521,14 +550,60 @@ class PanelGenerator:
             return result
         raise AssertionError(f"unreachable: unknown dist {spec.dist!r}")
 
-    def _draw_treatment(self, n_rows: int, entity_ids: np.ndarray, periods: np.ndarray) -> np.ndarray:
+    def _draw_treatment(
+        self, n_rows: int, entity_ids: np.ndarray, periods: np.ndarray, df: pd.DataFrame
+    ) -> np.ndarray:
         assert self._treatment is not None
         gen = self._rng_manager.child("treatment_assignment")
-        entity_treated = gen.random(self.n_entities) < self._treatment.propensity
+
+        if self._treatment.assignment == "random":
+            entity_treated = gen.random(self.n_entities) < self._treatment.propensity
+        else:
+            assert self._treatment.propensity_formula is not None
+            entity_treated = self._draw_propensity_treatment(gen, df)
+
         row_entity_treated = entity_treated[entity_ids]
         active = periods >= self._treatment.start_period
         result: np.ndarray = (row_entity_treated & active).astype(int)
         return result
+
+    def _draw_propensity_treatment(
+        self, gen: np.random.Generator, df: pd.DataFrame
+    ) -> np.ndarray:
+        """Compute per-entity treatment assignment for
+        assignment="propensity": evaluate `propensity_formula` once per
+        entity using that entity's covariate values at period 0, pass
+        through a logistic sigmoid, and draw a Bernoulli outcome.
+        """
+        assert self._treatment is not None
+        assert self._treatment.propensity_formula is not None
+
+        period0 = df[df["period"] == df["period"].min()].set_index("entity_id")
+        # Re-index to guarantee entity order 0..n_entities-1 regardless of
+        # row order (PanelGenerator always produces sorted output, but this
+        # is a cheap safety net against relying on that implicitly).
+        period0 = period0.reindex(np.arange(self.n_entities))
+
+        local_dict = {col: period0[col] for col in period0.columns if col in df.columns}
+        try:
+            linear_pred = pd.eval(
+                self._treatment.propensity_formula,
+                local_dict=local_dict,
+                global_dict={},
+                engine="python",
+            )
+        except Exception as e:
+            raise ValueError(
+                f"Failed to evaluate propensity_formula "
+                f"{self._treatment.propensity_formula!r}: {e}. The formula may only "
+                "reference variables declared via add_variable."
+            ) from e
+
+        linear_pred_arr = np.asarray(linear_pred, dtype=float)
+        propensity = 1.0 / (1.0 + np.exp(-linear_pred_arr))
+        draws = gen.random(self.n_entities)
+        entity_treated: np.ndarray = draws < propensity
+        return entity_treated
 
     def _compute_outcome_mean(self, data: pd.DataFrame) -> tuple[np.ndarray, Optional[pd.DataFrame]]:
         """Returns (mean_outcome, design_matrix_or_None). design_matrix is
@@ -586,7 +661,7 @@ class PanelGenerator:
             df[ur.feature] = ur.apply_to_panel(df)
 
         if self._treatment is not None:
-            df[self._treatment.name] = self._draw_treatment(n_rows, entity_ids, periods)
+            df[self._treatment.name] = self._draw_treatment(n_rows, entity_ids, periods, df)
 
         multicollinearities = [p for p in self._pathologies if isinstance(p, Multicollinearity)]
         for mc in multicollinearities:

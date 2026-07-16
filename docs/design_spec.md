@@ -463,3 +463,39 @@ covariate-dependent binary treatment pathology -- `add_treatment`'s
 scenario has to be built manually, same limitation encountered twice now):
 naive difference-in-means is meaningfully biased (>0.3 off the true ATE
 at n=100k), while `psm_fit` recovers the true ATE to within 0.1.
+
+### Propensity-based treatment assignment (closes a recurring gap)
+
+`PanelGenerator.add_treatment(assignment="propensity", propensity_formula=...)`
+extends treatment assignment beyond `"random"` (independent of
+covariates) to support genuine covariate-dependent selection into
+treatment: each entity's treatment probability is
+`sigmoid(propensity_formula)`, evaluated once per entity using that
+entity's covariate values at period 0 (treatment remains entity-fixed and
+time-invariant before `start_period`, matching the existing `"random"`
+semantics). `propensity_formula` uses the same `pandas.eval` mechanism
+and security posture as `add_selection_bias`/`add_hte` (verified: code
+injection attempts are rejected the same way).
+
+This closes a gap flagged three times across the panel FE/RE, PSM
+work: those reference-fit test scenarios needed a *confounded* binary
+treatment (propensity correlated with an observed covariate) to be
+meaningful test cases, and previously had to construct this by hand,
+post-hoc-modifying a generated DataFrame rather than using a first-class
+`PanelGenerator` API. `tests/test_psm.py` has been refactored to use
+`assignment="propensity"` directly; verified byte-for-byte equivalent
+statistical results to the old hand-constructed version (naive
+diff-in-means bias >0.3, PSM recovery within 0.1 of true ATE at n=100k).
+
+Verified independently: empirical treatment rate within a narrow
+covariate window matches the theoretical `sigmoid(propensity_formula)`
+value to within 0.05 at three test points (x1 = -1, 0, 1), confirming the
+mechanism produces genuinely calibrated propensity-based assignment, not
+just "treated units differ from control on average."
+
+Note: this does NOT close the separate gap noted under Panel FE/RE (a
+time-invariant per-entity *random effect* added to a continuous
+covariate/outcome, for the classic entity-effect-correlated-with-regressor
+FE-vs-RE test scenario) -- that remains a distinct, still-open follow-up,
+since it's a different mechanism (a continuous entity-level nuisance
+term, not a binary treatment's selection probability).
