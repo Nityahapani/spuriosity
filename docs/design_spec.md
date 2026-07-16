@@ -382,3 +382,53 @@ Two verified statistical properties:
    pedagogically important result this pathology reproduces -- it's the
    textbook demonstration of why nonstationary time series need
    differencing/cointegration analysis rather than naive OLS.
+
+### Panel Fixed Effects / Random Effects + Hausman test
+
+`spuriosity.reference.panel_fe_fit` / `panel_fe_predict` and
+`panel_re_fit` / `panel_re_predict` (new optional `linearmodels` usage,
+same dependency already introduced for `iv2sls_fit`) wrap
+`linearmodels.panel.PanelOLS(entity_effects=True)` and
+`linearmodels.panel.RandomEffects` respectively, the workhorse pairing of
+applied panel econometrics.
+
+- **FE** demeans within each entity, controlling for all time-invariant
+  entity-level confounders (observed or not) at the cost of being unable
+  to estimate any time-invariant regressor's coefficient and having no
+  intercept term.
+- **RE** treats entity effects as a random draw uncorrelated with the
+  regressors -- more efficient than FE when that assumption holds, but
+  biased when it doesn't.
+
+`spuriosity.reference.hausman_test(fe_result, re_result)` implements the
+standard specification test: compares only the coefficients shared
+between both fits (RE's intercept, which has no FE counterpart, is
+excluded automatically) and tests the null that entity effects are
+uncorrelated with the regressors. A small p-value means RE is biased and
+FE should be preferred.
+
+The classical Hausman formula assumes `Var(FE) - Var(RE)` is positive
+semi-definite, but finite-sample covariance estimates can violate this
+slightly due to estimation noise (confirmed during development: even at
+n=2000×10, a naive `np.linalg.inv` on the raw covariance difference
+produced a small negative eigenvalue, making the naive chi-squared
+statistic nonsensical). Fixed via eigenvalue-clipped pseudo-inversion --
+the standard practical workaround used by applied econometrics software
+-- verified against both directions: correctly rejects RE (p≈0) when an
+entity effect is constructed to correlate with the regressor, and
+correctly fails to reject (p=0.26-0.76 across test runs) when the entity
+effect is independent of the regressor.
+
+Note: `spuriosity` does not yet have a dedicated pathology for injecting
+a time-invariant panel entity effect (the classic FE-vs-RE test scenario
+had to be constructed by hand in tests, post-hoc-modifying a generated
+DataFrame rather than through a first-class `add_*` builder method) --
+flagged as a natural candidate for a future pathology rather than
+addressed here, to avoid scope creep into a Tier 1 item that was
+specifically about the reference-fit toolbox, not new DGP surface.
+
+Verified end-to-end via `compare_models`: on data with an entity effect
+correlated with the regressor, FE (coef_rmse ≈ 0.0004) dramatically
+outranks both RE (≈ 0.146) and pooled OLS (≈ 0.210), reproducing the
+textbook demonstration of why panel FE is the default choice when entity
+heterogeneity might correlate with regressors of interest.

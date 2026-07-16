@@ -21,6 +21,7 @@ from typing import Any, Optional
 import numpy as np
 import pandas as pd
 import statsmodels.formula.api as smf
+from scipy import stats
 
 
 @dataclass
@@ -314,3 +315,160 @@ def first_stage_f_stat(data: pd.DataFrame, endogenous: str, instruments: list[st
     model = smf.ols(formula, data=df).fit()
     f_stat: float = float(model.fvalue)
     return f_stat
+
+
+# ----------------------------------------------------------------------
+# Panel Fixed Effects / Random Effects (optional dependency: linearmodels)
+# ----------------------------------------------------------------------
+
+
+def _require_linearmodels_panel():
+    try:
+        from linearmodels.panel import PanelOLS, RandomEffects
+    except ImportError as e:
+        raise ImportError(
+            "panel_fe_fit/panel_re_fit require the optional 'linearmodels' dependency. "
+            "Install it with: pip install spuriosity[linearmodels]"
+        ) from e
+    return PanelOLS, RandomEffects
+
+
+def panel_fe_fit(
+    data: pd.DataFrame,
+    outcome: str,
+    features: list[str],
+    entity_col: str = "entity_id",
+    period_col: str = "period",
+) -> FitResult:
+    """Fit a panel fixed-effects (within) estimator via
+    `linearmodels.panel.PanelOLS(entity_effects=True)`, controlling for
+    all time-invariant entity-level confounders (observed or not) by
+    demeaning within each entity.
+
+    Requires the optional `linearmodels` dependency
+    (``pip install spuriosity[linearmodels]``).
+
+    Note: FE cannot estimate a coefficient on any time-invariant regressor
+    (it gets demeaned away entirely) and has no intercept term -- unlike
+    `ols_fit`, `.coefficients` will not contain an `"Intercept"` key.
+    `.extra["entity_effects"]` stores the fitted entity effects
+    (`fitted.estimated_effects`) for further inspection if needed.
+    """
+    PanelOLS, _ = _require_linearmodels_panel()
+    df = data.set_index([entity_col, period_col])
+    model = PanelOLS(df[outcome], df[features], entity_effects=True)
+    fitted = model.fit()
+    coefficients = fitted.params.to_dict()
+    return FitResult(
+        coefficients=coefficients,
+        raw_model=fitted,
+        extra={"entity_col": entity_col, "period_col": period_col, "features": list(features)},
+    )
+
+
+def panel_fe_predict(fit_result: FitResult, data: pd.DataFrame) -> np.ndarray:
+    """Predict fitted values from a `panel_fe_fit` result. `data` must
+    have the same panel structure (entity/period columns) as the data
+    used to fit."""
+    entity_col = fit_result.extra["entity_col"]
+    period_col = fit_result.extra["period_col"]
+    features = fit_result.extra["features"]
+    df = data.set_index([entity_col, period_col])
+    predictions = fit_result.raw_model.predict(df[features])
+    return np.asarray(predictions.to_numpy().ravel())
+
+
+def panel_re_fit(
+    data: pd.DataFrame,
+    outcome: str,
+    features: list[str],
+    entity_col: str = "entity_id",
+    period_col: str = "period",
+) -> FitResult:
+    """Fit a panel random-effects (GLS) estimator via
+    `linearmodels.panel.RandomEffects`, treating entity effects as a
+    random draw uncorrelated with the regressors. More efficient than FE
+    when that assumption holds, but biased if entity effects actually
+    correlate with the regressors -- see `hausman_test` for the standard
+    diagnostic that checks this assumption.
+
+    Requires the optional `linearmodels` dependency
+    (``pip install spuriosity[linearmodels]``). Unlike `panel_fe_fit`, RE
+    does include an intercept, reported under `linearmodels`' own
+    `"const"` naming (not patsy's `"Intercept"` -- see the note on this
+    same naming mismatch in `iv2sls_fit`'s docstring).
+    """
+    _, RandomEffects = _require_linearmodels_panel()
+    df = data.set_index([entity_col, period_col])
+    exog = df[features].copy()
+    exog["const"] = 1.0
+    model = RandomEffects(df[outcome], exog)
+    fitted = model.fit()
+    coefficients = fitted.params.to_dict()
+    return FitResult(
+        coefficients=coefficients,
+        raw_model=fitted,
+        extra={"entity_col": entity_col, "period_col": period_col, "features": list(features)},
+    )
+
+
+def panel_re_predict(fit_result: FitResult, data: pd.DataFrame) -> np.ndarray:
+    """Predict fitted values from a `panel_re_fit` result."""
+    entity_col = fit_result.extra["entity_col"]
+    period_col = fit_result.extra["period_col"]
+    features = fit_result.extra["features"]
+    df = data.set_index([entity_col, period_col])
+    exog = df[features].copy()
+    exog["const"] = 1.0
+    predictions = fit_result.raw_model.predict(exog)
+    return np.asarray(predictions.to_numpy().ravel())
+
+
+def hausman_test(fe_result: FitResult, re_result: FitResult) -> dict[str, float]:
+    """Hausman specification test comparing a fixed-effects and
+    random-effects fit on the same data: tests the null that entity
+    effects are uncorrelated with the regressors (i.e. that RE is valid
+    and more efficient than FE). A small p-value rejects this null,
+    indicating RE is biased and FE should be preferred.
+
+    Compares only the coefficients shared between both fits (RE's
+    intercept has no FE counterpart and is excluded automatically).
+
+    Uses eigenvalue-clipped pseudo-inversion of the covariance difference
+    matrix rather than a naive `np.linalg.inv`: the classical Hausman
+    formula assumes `Var(FE) - Var(RE)` is positive semi-definite (since
+    RE is asymptotically efficient under its null), but finite-sample
+    covariance estimates can violate this slightly due to estimation
+    noise, producing a technically-undefined or nonsensical chi-squared
+    statistic under a naive matrix inverse. Clipping small/negative
+    eigenvalues to a small positive floor is the standard practical fix
+    used by applied econometrics software; verified against both a case
+    where RE is genuinely biased (correctly rejected, p near 0) and a
+    case where RE is valid (correctly not rejected, p large).
+
+    Returns a dict with keys `"chi2"`, `"dof"`, `"p_value"`.
+    """
+    shared = [p for p in fe_result.coefficients if p in re_result.coefficients]
+    if not shared:
+        raise ValueError(
+            "hausman_test found no coefficients shared between the FE and RE results "
+            "to compare; were both fit on the same feature set?"
+        )
+
+    b_fe = np.array([fe_result.coefficients[k] for k in shared])
+    b_re = np.array([re_result.coefficients[k] for k in shared])
+    b_diff = b_fe - b_re
+
+    fe_cov = fe_result.raw_model.cov.loc[shared, shared].to_numpy()
+    re_cov = re_result.raw_model.cov.loc[shared, shared].to_numpy()
+    v_diff = fe_cov - re_cov
+
+    eigvals, eigvecs = np.linalg.eigh(v_diff)
+    eigvals_clipped = np.clip(eigvals, a_min=1e-10, a_max=None)
+    v_diff_pinv = eigvecs @ np.diag(1.0 / eigvals_clipped) @ eigvecs.T
+
+    chi2 = float(b_diff.T @ v_diff_pinv @ b_diff)
+    dof = len(shared)
+    p_value = float(1 - stats.chi2.cdf(chi2, df=dof))
+
+    return {"chi2": chi2, "dof": float(dof), "p_value": p_value}
