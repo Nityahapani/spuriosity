@@ -472,3 +472,104 @@ def hausman_test(fe_result: FitResult, re_result: FitResult) -> dict[str, float]
     p_value = float(1 - stats.chi2.cdf(chi2, df=dof))
 
     return {"chi2": chi2, "dof": float(dof), "p_value": p_value}
+
+
+# ----------------------------------------------------------------------
+# Propensity Score Matching (optional dependency: scikit-learn)
+# ----------------------------------------------------------------------
+
+
+def psm_fit(
+    data: pd.DataFrame,
+    outcome: str,
+    treatment: str,
+    covariates: list[str],
+) -> FitResult:
+    """Estimate the ATE of a binary `treatment` via nearest-neighbor
+    propensity score matching: fit a logistic regression of `treatment` on
+    `covariates` to estimate each unit's propensity score, then match each
+    treated unit to its nearest control unit by propensity score
+    (with replacement) and average the matched outcome differences.
+
+    Requires the optional `sklearn` dependency
+    (``pip install spuriosity[sklearn]``); raises a clear `ImportError`
+    with installation instructions if not available.
+
+    `.ate_estimate` is the matched-pairs average treatment effect on the
+    treated (ATT, technically -- matching is only performed for treated
+    units against controls, not the reverse). `.extra` contains:
+
+    - `"propensity_scores"`: the fitted propensity score for every row in
+      `data`, in the same row order.
+    - `"common_support_fraction"`: the fraction of treated units whose
+      propensity score falls within the control group's observed
+      propensity score range (and vice versa isn't checked separately,
+      since ATT only requires treated-side overlap). Low values (well
+      below 1.0) indicate poor overlap between treated and control groups
+      -- matches for units outside common support are extrapolating the
+      propensity model rather than genuinely comparing similar units, and
+      the ATT estimate should be treated with more caution the lower this
+      fraction is.
+    """
+    try:
+        from sklearn.linear_model import LogisticRegression
+    except ImportError as e:
+        raise ImportError(
+            "psm_fit requires the optional 'sklearn' dependency. "
+            "Install it with: pip install spuriosity[sklearn]"
+        ) from e
+    from scipy.spatial import cKDTree
+
+    df = data.reset_index(drop=True)
+    n_treated = int(df[treatment].sum())
+    n_control = len(df) - n_treated
+    if n_treated == 0 or n_control == 0:
+        raise ValueError(
+            f"psm_fit requires both treated and control units; got "
+            f"{n_treated} treated and {n_control} control."
+        )
+
+    ps_model = LogisticRegression()
+    ps_model.fit(df[covariates], df[treatment])
+    propensity_scores = ps_model.predict_proba(df[covariates])[:, 1]
+
+    treated_mask = df[treatment].to_numpy().astype(bool)
+    treated_ps = propensity_scores[treated_mask]
+    control_ps = propensity_scores[~treated_mask]
+
+    control_min, control_max = control_ps.min(), control_ps.max()
+    within_support = (treated_ps >= control_min) & (treated_ps <= control_max)
+    common_support_fraction = float(within_support.mean())
+
+    control_outcomes = df.loc[~treated_mask, outcome].to_numpy()
+    treated_outcomes = df.loc[treated_mask, outcome].to_numpy()
+
+    tree = cKDTree(control_ps.reshape(-1, 1))
+    _, matched_idx = tree.query(treated_ps.reshape(-1, 1), k=1)
+    matched_control_outcomes = control_outcomes[matched_idx]
+
+    matched_differences = treated_outcomes - matched_control_outcomes
+    ate_estimate = float(matched_differences.mean())
+    ate_std_error = float(matched_differences.std(ddof=1) / np.sqrt(len(matched_differences)))
+
+    return FitResult(
+        coefficients={treatment: ate_estimate},
+        raw_model=ps_model,
+        ate_estimate=ate_estimate,
+        ate_std_error=ate_std_error,
+        extra={
+            "propensity_scores": propensity_scores,
+            "common_support_fraction": common_support_fraction,
+            "covariates": list(covariates),
+        },
+    )
+
+
+def psm_predict(fit_result: FitResult, data: pd.DataFrame) -> np.ndarray:
+    """PSM estimates an average treatment effect on the treated, not a
+    row-level predictive model in the usual sense. This returns a
+    constant-effect prediction (`ate_estimate` broadcast to every row),
+    matching the convention already used by `doubleml_predict`."""
+    if fit_result.ate_estimate is None:
+        raise ValueError("FitResult has no ate_estimate; was it produced by psm_fit?")
+    return np.full(len(data), fit_result.ate_estimate, dtype=float)

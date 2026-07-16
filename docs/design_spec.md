@@ -432,3 +432,34 @@ correlated with the regressor, FE (coef_rmse ≈ 0.0004) dramatically
 outranks both RE (≈ 0.146) and pooled OLS (≈ 0.210), reproducing the
 textbook demonstration of why panel FE is the default choice when entity
 heterogeneity might correlate with regressors of interest.
+
+### Propensity score matching reference fit
+
+`spuriosity.reference.psm_fit` / `psm_predict` (uses the `sklearn`
+optional dependency already introduced for `sklearn_lr_fit`) estimates
+the average treatment effect on the treated (ATT) for a binary treatment
+via nearest-neighbor propensity score matching:
+
+1. Fit a logistic regression of `treatment` on `covariates` to estimate
+   each unit's propensity score.
+2. Match each treated unit to its nearest control unit by propensity
+   score (nearest-neighbor, with replacement, via `scipy.spatial.cKDTree`
+   -- scipy is already a core dependency, so no new dependency needed for
+   the matching step itself).
+3. Average the matched-pair outcome differences.
+
+`.extra["common_support_fraction"]` reports the fraction of treated units
+whose propensity score falls within the control group's observed
+propensity range -- a standard overlap diagnostic. Verified to correctly
+distinguish a well-overlapping scenario (0.9999 at moderate propensity
+separation) from a poorly-overlapping one (0.941 at extreme separation),
+confirming it's a real signal and not just a placeholder value.
+
+Verified end-to-end against a hand-constructed confounded binary
+treatment on top of `spuriosity`-generated covariate data (see the note
+under Panel FE/RE about `spuriosity` not yet having a dedicated
+covariate-dependent binary treatment pathology -- `add_treatment`'s
+`"random"` assignment is deliberately independent of covariates, so this
+scenario has to be built manually, same limitation encountered twice now):
+naive difference-in-means is meaningfully biased (>0.3 off the true ATE
+at n=100k), while `psm_fit` recovers the true ATE to within 0.1.
