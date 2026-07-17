@@ -499,3 +499,30 @@ covariate/outcome, for the classic entity-effect-correlated-with-regressor
 FE-vs-RE test scenario) -- that remains a distinct, still-open follow-up,
 since it's a different mechanism (a continuous entity-level nuisance
 term, not a binary treatment's selection probability).
+
+### XGBoost ML baseline
+
+`spuriosity.reference.xgboost_fit` / `xgboost_predict` (new optional
+`xgboost` dependency, `pip install spuriosity[xgboost]`, lazy-imported
+with a clear `ImportError` if missing) is a pure predictive baseline for
+the "does a flexible nonlinear model beat econometric assumptions"
+comparison -- e.g. against `ols_fit` on data generated with a nonlinear
+outcome (`set_outcome(fn=...)`).
+
+Unlike every other reference fit, `.coefficients` is deliberately left
+empty: XGBoost produces no interpretable per-feature coefficient, so
+`coef_rmse` is simply not computed for it (the same "not applicable"
+convention used throughout `StressTest`/`compare_models` -- verified that
+`ranked_table(by="coef_rmse")` correctly excludes an XGBoost model while
+still including a comparable OLS model in the same comparison, tracked
+via `.attrs["excluded_models"]` rather than silently dropped).
+`.extra["feature_importances"]` exposes XGBoost's own importance metric
+instead, explicitly documented as a different quantity that should not be
+compared against `GroundTruth.true_coefficients`.
+
+Verified in both directions: on genuinely nonlinear generated data,
+XGBoost's R² substantially exceeds OLS's (0.986 vs 0.608 in one test
+run); on genuinely linear generated data, XGBoost shows no meaningful
+predictive advantage over correctly-specified OLS (confirming the
+nonlinear-data win reflects real functional-form flexibility rather than
+XGBoost being unconditionally "better").

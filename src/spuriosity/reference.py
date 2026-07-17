@@ -573,3 +573,62 @@ def psm_predict(fit_result: FitResult, data: pd.DataFrame) -> np.ndarray:
     if fit_result.ate_estimate is None:
         raise ValueError("FitResult has no ate_estimate; was it produced by psm_fit?")
     return np.full(len(data), fit_result.ate_estimate, dtype=float)
+
+
+# ----------------------------------------------------------------------
+# ML baseline: XGBoost (optional dependency)
+# ----------------------------------------------------------------------
+
+
+def xgboost_fit(
+    data: pd.DataFrame,
+    outcome: str,
+    features: list[str],
+    n_estimators: int = 100,
+    max_depth: int = 4,
+    **xgb_kwargs: object,
+) -> FitResult:
+    """Fit an XGBoost regressor as a pure predictive ML baseline, for the
+    "does a flexible nonlinear model beat econometric assumptions" stress
+    test -- e.g. comparing recovery/prediction quality against `ols_fit`
+    on data generated with a nonlinear outcome (`set_outcome(fn=...)`) or
+    unmodeled interactions.
+
+    Requires the optional `xgboost` dependency
+    (``pip install spuriosity[xgboost]``); raises a clear `ImportError`
+    with installation instructions if not available.
+
+    Unlike the econometric reference fits, XGBoost does not produce
+    interpretable per-feature coefficients -- `.coefficients` is left
+    empty (so `coef_rmse` is simply not computed for this model, the same
+    "not applicable" convention used elsewhere; feature importances are
+    available via `.extra["feature_importances"]` instead, which is a
+    fundamentally different quantity from a linear coefficient and should
+    not be compared against `GroundTruth.true_coefficients`).
+
+    Extra `xgb_kwargs` are passed through to `xgboost.XGBRegressor`.
+    """
+    try:
+        import xgboost as xgb
+    except ImportError as e:
+        raise ImportError(
+            "xgboost_fit requires the optional 'xgboost' dependency. "
+            "Install it with: pip install spuriosity[xgboost]"
+        ) from e
+
+    model = xgb.XGBRegressor(n_estimators=n_estimators, max_depth=max_depth, **xgb_kwargs)
+    model.fit(data[features], data[outcome])
+
+    feature_importances = dict(zip(features, model.feature_importances_.tolist()))
+
+    return FitResult(
+        coefficients={},
+        raw_model=model,
+        extra={"features": list(features), "feature_importances": feature_importances},
+    )
+
+
+def xgboost_predict(fit_result: FitResult, data: pd.DataFrame) -> np.ndarray:
+    features = fit_result.extra["features"]
+    predictions: np.ndarray = np.asarray(fit_result.raw_model.predict(data[features]))
+    return predictions

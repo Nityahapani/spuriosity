@@ -52,6 +52,9 @@ doubleml = [
 linearmodels = [
     "linearmodels>=5.3",
 ]
+xgboost = [
+    "xgboost>=2.0",
+]
 dev = [
     "pytest>=7.4",
     "pytest-cov>=4.1",
@@ -61,6 +64,7 @@ dev = [
     "doubleml>=0.7",
     "matplotlib>=3.7",
     "linearmodels>=5.3",
+    "xgboost>=2.0",
 ]
 
 [project.urls]
