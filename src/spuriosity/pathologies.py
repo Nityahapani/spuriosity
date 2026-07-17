@@ -362,7 +362,8 @@ class Heteroskedasticity(Pathology):
         arr = np.asarray(result, dtype=float)
         if arr.shape == ():
             arr = np.full(feature_values.shape, float(arr))
-        return np.clip(arr, a_min=0.0, a_max=None)
+        clipped: np.ndarray = np.clip(arr, a_min=0.0, a_max=None)
+        return clipped
 
     def ground_truth_contribution(self) -> dict:
         return {

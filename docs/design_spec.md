@@ -526,3 +526,50 @@ run); on genuinely linear generated data, XGBoost shows no meaningful
 predictive advantage over correctly-specified OLS (confirming the
 nonlinear-data win reflects real functional-form flexibility rather than
 XGBoost being unconditionally "better").
+
+### CausalForestDML reference fit (spike-then-build, per v2 planning)
+
+Per the original v2 Tier 1 plan, `econml`/`CausalForestDML` was flagged
+as the highest-risk reference-fit dependency and spiked in isolation
+before committing to building it into the package. Spike findings:
+
+- **Installs cleanly**, no conflicts with existing dependencies (`pip
+  check` clean).
+- **First-import cost is real but one-time**: ~18s cold (numba's
+  LLVM/JIT compilation cache build, a transitive dependency), ~2s warm.
+  This is an environment-level cost (first `causal_forest_fit` call in a
+  fresh virtualenv/CI run), not a per-call cost -- documented in the
+  function's own docstring so users aren't alarmed by an apparently slow
+  first call.
+- **`n_estimators` must be evenly divisible by `CausalForestDML`'s
+  `subforest_size`** (default 4) -- discovered directly during spiking
+  (an arbitrary `n_estimators=50` fails deep inside `econml`'s internal
+  fit() call stack with a raw `ValueError`). `causal_forest_fit` validates
+  this upfront with a clear, actionable error message instead.
+- **`model_t` must be a classifier, not a regressor, when
+  `discrete_treatment=True`** -- using a regressor produces a warning
+  (not an error) from `econml` but is a specification mistake.
+  `causal_forest_fit` avoids this by construction, defaulting to
+  `RandomForestClassifier` for `model_t` under `discrete_treatment=True`
+  (the default) -- verified warning-free.
+
+`spuriosity.reference.causal_forest_fit` / `causal_forest_predict` (new
+optional `econml` dependency, `pip install spuriosity[econml]`):
+
+- `.coefficients` is left empty (same convention as `xgboost_fit` -- a
+  causal forest has no single per-feature coefficient by design).
+  `.ate_estimate` reports the population-average effect (mean of
+  per-row CATE predictions on the training data).
+- `causal_forest_predict` returns the **per-row CATE**, not an outcome
+  prediction -- explicitly documented as breaking the usual `*_predict`
+  convention used by every other reference fit in this module, since
+  that's what a causal forest is actually for.
+
+Verified end-to-end against `spuriosity`'s own `add_hte`-generated data:
+near-perfect correlation (0.9986) between predicted and true per-row CATE
+across a full sample; and, on a deliberately nonlinear (quadratic) true
+CATE where a naive OLS-with-linear-interaction specification is
+misspecified, the causal forest's error (0.16) is roughly 9x smaller than
+the naive model's error (1.49) -- the concrete "does a causal forest beat
+naive approaches on a confounded + heterogeneous DGP" demonstration this
+item was scoped to support.

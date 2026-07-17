@@ -632,3 +632,120 @@ def xgboost_predict(fit_result: FitResult, data: pd.DataFrame) -> np.ndarray:
     features = fit_result.extra["features"]
     predictions: np.ndarray = np.asarray(fit_result.raw_model.predict(data[features]))
     return predictions
+
+
+# ----------------------------------------------------------------------
+# Causal Forest (optional dependency: econml)
+# ----------------------------------------------------------------------
+
+
+def causal_forest_fit(
+    data: pd.DataFrame,
+    outcome: str,
+    treatment: str,
+    covariates: list[str],
+    n_estimators: int = 200,
+    discrete_treatment: bool = True,
+    random_state: Optional[int] = None,
+) -> FitResult:
+    """Fit a causal forest via `econml.dml.CausalForestDML`, to estimate a
+    full CATE function (not just the ATE) as a nonparametric function of
+    `covariates` -- the natural counterpart to `spuriosity`'s `add_hte`
+    for testing whether a flexible ML-based estimator recovers
+    heterogeneous treatment effects, as opposed to `doubleml_fit`'s
+    single average effect.
+
+    Requires the optional `econml` dependency
+    (``pip install spuriosity[econml]``); raises a clear `ImportError`
+    with installation instructions if not available.
+
+    Note on first-import cost: `econml` depends on `numba`, which performs
+    a one-time LLVM/JIT compilation cache build on first import in a
+    given environment (observed ~15-20s cold, ~2s warm in testing) --
+    this is a one-time environment cost, not a per-call cost, but is
+    worth knowing about if this is the first `causal_forest_fit` call in
+    a fresh virtualenv/CI run.
+
+    Nuisance models default to random forests, with `model_t` correctly
+    specified as a *classifier* when `discrete_treatment=True` (the
+    default) -- using a regressor there is a common mistake that `econml`
+    only warns about rather than rejecting; `causal_forest_fit` avoids it
+    by construction.
+
+    `n_estimators` must be evenly divisible by 4 (`CausalForestDML`'s
+    `subforest_size` default, not exposed as a separate parameter here);
+    this is validated upfront with a clear error rather than letting
+    `econml`'s own internal `ValueError` (raised deep inside its `fit()`
+    call stack) surface directly.
+
+    `.coefficients` is left empty (like `xgboost_fit` -- a causal forest
+    has no single per-feature coefficient; its whole point is a
+    covariate-varying effect surface). Use `.raw_model.effect(X)` directly
+    for CATE predictions at arbitrary covariate points, or
+    `causal_forest_predict` for the per-row CATE on `data` itself.
+    `.extra["ate_estimate"]` reports the population-average effect (the
+    mean of the per-row CATE predictions on the training data) for
+    convenience when only the ATE is needed.
+    """
+    try:
+        from econml.dml import CausalForestDML
+    except ImportError as e:
+        raise ImportError(
+            "causal_forest_fit requires the optional 'econml' dependency. "
+            "Install it with: pip install spuriosity[econml]"
+        ) from e
+    from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
+
+    # CausalForestDML requires n_estimators to be evenly divisible by its
+    # subforest_size parameter (default 4, not exposed here since v1 of
+    # this wrapper doesn't need to tune it) -- validated upfront with a
+    # clear message, since econml's own internal error on this is a raw
+    # ValueError from deep inside its fit() call stack that doesn't
+    # explain the constraint clearly (encountered directly during
+    # development: n_estimators=50 fails since 50 is not divisible by 4).
+    _default_subforest_size = 4
+    if n_estimators % _default_subforest_size != 0:
+        raise ValueError(
+            f"n_estimators ({n_estimators}) must be evenly divisible by CausalForestDML's "
+            f"subforest_size (default {_default_subforest_size}). Try a multiple of "
+            f"{_default_subforest_size}, e.g. {(n_estimators // _default_subforest_size + 1) * _default_subforest_size}."
+        )
+
+    model_t: object
+    if discrete_treatment:
+        model_t = RandomForestClassifier(n_estimators=100, max_depth=5, random_state=random_state)
+    else:
+        model_t = RandomForestRegressor(n_estimators=100, max_depth=5, random_state=random_state)
+
+    est = CausalForestDML(
+        model_y=RandomForestRegressor(n_estimators=100, max_depth=5, random_state=random_state),
+        model_t=model_t,
+        discrete_treatment=discrete_treatment,
+        n_estimators=n_estimators,
+        random_state=random_state,
+    )
+    X = data[covariates].to_numpy()
+    est.fit(Y=data[outcome].to_numpy(), T=data[treatment].to_numpy(), X=X)
+
+    per_row_cate = np.asarray(est.effect(X))
+    ate_estimate = float(per_row_cate.mean())
+
+    return FitResult(
+        coefficients={},
+        raw_model=est,
+        ate_estimate=ate_estimate,
+        extra={"covariates": list(covariates), "ate_estimate": ate_estimate},
+    )
+
+
+def causal_forest_predict(fit_result: FitResult, data: pd.DataFrame) -> np.ndarray:
+    """Returns the per-row CATE estimate (the treatment effect at each
+    row's covariate values), NOT an outcome prediction -- unlike every
+    other `*_predict` function in this module. This matches what a causal
+    forest is actually for: estimating a heterogeneous effect surface,
+    not predicting the outcome variable itself.
+    """
+    covariates = fit_result.extra["covariates"]
+    X = data[covariates].to_numpy()
+    effects: np.ndarray = np.asarray(fit_result.raw_model.effect(X))
+    return effects
