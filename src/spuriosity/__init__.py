@@ -34,6 +34,7 @@ from spuriosity.pathologies import (
     UnitRoot,
 )
 from spuriosity.stress_test import ComparisonReport, StressTest, StressTestReport, compare_models
+from spuriosity.synthetic_control import SyntheticControlResult, synthetic_control_fit
 from spuriosity.viz import plot_recovery_report
 
 __all__ = [
@@ -65,4 +66,6 @@ __all__ = [
     "MeasurementError",
     "Endogeneity",
     "UnitRoot",
+    "synthetic_control_fit",
+    "SyntheticControlResult",
 ]

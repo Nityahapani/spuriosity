@@ -573,3 +573,54 @@ misspecified, the causal forest's error (0.16) is roughly 9x smaller than
 the naive model's error (1.49) -- the concrete "does a causal forest beat
 naive approaches on a confounded + heterogeneous DGP" demonstration this
 item was scoped to support.
+
+### Synthetic Control Method + placebo-in-space inference
+
+`spuriosity.synthetic_control.synthetic_control_fit` implements the
+Abadie-Diamond-Hainmueller (2010) synthetic control method with full
+placebo-in-space inference, per the "keep full scope, including placebo
+inference" decision made when scoping v2 Tier 1. Kept as its own module
+(not folded into `reference.py`) since it has real internal structure --
+a constrained weight-optimization step and a placebo-inference procedure
+with its own result object -- unlike the thin fit/predict wrapper
+pattern used elsewhere.
+
+**Mechanism**: for a single treated unit, fits nonnegative weights
+(summing to 1) over a donor pool of untreated units via constrained
+optimization (`scipy.optimize.minimize`, SLSQP), minimizing the squared
+pre-treatment gap between the treated unit and the weighted donor
+combination. The post-treatment effect is the treated-vs-synthetic gap
+in the post-treatment window. `pre_period_fit_rmse` is exposed as a
+standard SCM diagnostic (large pre-period RMSE undermines confidence that
+a post-period gap reflects the treatment rather than poor fit).
+
+**Placebo-in-space inference** (`run_placebo_inference=True`, default):
+reruns the identical procedure treating each donor as if it were the
+treated unit (using the real treated unit and remaining donors as that
+placebo's pool), producing a rank-based p-value (fraction of units,
+including the real one, whose |average effect| is >= the real unit's).
+
+Verified end-to-end against a manually constructed panel with a
+known common-factor structure (the structural condition SCM requires to
+be meaningful) and a known injected effect: estimated effect matches the
+true effect closely (4.96 vs true 5.0 in one test run); a null-effect
+case correctly produces a non-significant placebo p-value (0.45); a
+genuine effect correctly produces a significant one (0.05, at n=20
+units).
+
+**Real finding during test development, documented in the module
+docstring**: because each placebo unit's own donor pool includes the
+*real* treated unit (whose post-period values carry the true effect), a
+donor with substantial weight on the treated unit can itself produce a
+large apparent "placebo effect" when compensating for that shift in its
+own fit -- occasionally exceeding the real effect in magnitude,
+especially with a small donor pool. An initial test asserting "a large
+true effect always achieves the minimum possible p-value" failed for
+exactly this reason and was corrected to test the actually-general
+property instead (the p-value is always one of the valid discrete
+rank-based values, and reliably approaches the floor with a larger, more
+diverse donor pool, but is not *guaranteed* to hit the floor for any
+effect size with a small pool). This is a genuine, known limitation of
+placebo-in-space inference in the literature, not a bug -- worth knowing
+before over-interpreting a single SCM placebo p-value from a small donor
+pool.
