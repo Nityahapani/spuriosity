@@ -189,6 +189,13 @@ Same `seed` + same pinned `spuriosity` and `numpy` versions produces a
 byte-identical dataset. Cross-version reproducibility is **not** guaranteed —
 pin and cite both versions for reproducible research.
 
+## Worked examples
+
+See [`examples/`](examples/) for three self-contained notebooks, each
+runnable directly in Google Colab: DiD under selection bias, causal
+forest vs. OLS on a confounded + heterogeneous DGP, and IV under weak
+instruments.
+
 ## Contributing
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md).

@@ -624,3 +624,53 @@ effect size with a small pool). This is a genuine, known limitation of
 placebo-in-space inference in the literature, not a bug -- worth knowing
 before over-interpreting a single SCM placebo p-value from a small donor
 pool.
+
+### Worked example notebooks (v2 Tier 1, item 13)
+
+`examples/01_did_selection_bias.ipynb`, `02_causal_forest_vs_ols.ipynb`,
+`03_weak_instruments.ipynb` -- the three notebooks specified in the
+original v2 plan, each: generate a DGP with known ground truth -> fit one
+or more reference methods -> compare against the truth -> takeaway.
+
+Every notebook was executed end-to-end (`jupyter nbconvert --execute`)
+against a genuinely blank Python virtual environment (verified `import
+spuriosity` fails before running the notebook's own install cell) to
+confirm the real Colab install-and-run path works exactly as written --
+not just checked for syntax validity. This process caught two real bugs
+before they could ship in a public-facing notebook:
+
+1. **A `did_fit`/`add_treatment` interaction bug**: using
+   `add_treatment(start_period=5, ...)` to mean "the effect begins at
+   period 5" makes the treatment column identically equal to
+   `treatment_group * post` already, so `did_fit`'s own `treatment * post`
+   interaction term becomes perfectly collinear with it -- observed
+   directly as an OLS condition number of ~3x10^14 and a nonsensical
+   coefficient of ~10^12. Root-caused (not just observed) via checking
+   `df.groupby('period')['policy'].mean()`, which showed the treatment
+   column was already zero everywhere pre-period. Fixed by using
+   `start_period=0` for group membership (present at all periods) and a
+   separate `add_structural_break(kind="coefficient_shift")` for the
+   effect's actual timing -- documented in `examples/README.md` as a
+   general gotcha, not just patched silently in the notebook.
+
+2. **A mislabeled "weak instrument" that wasn't actually weak**: an
+   initial `instrument_strength=0.02` at n=200,000 produced a first-stage
+   F-statistic of 65.9 -- comfortably above the Stock-Yogo threshold of
+   10 -- while the notebook's own printed text claimed it was "below 10 =
+   weak." Caught by actually checking the printed F-stat value rather
+   than assuming a small `instrument_strength` parameter automatically
+   produces a weak instrument at any sample size. Fixed by searching for
+   the actual threshold empirically (`instrument_strength=0.005` gives
+   F≈4.4) and using that value instead.
+
+**Testing methodology**: `%pip install` (not `!pip install`) is used in
+every notebook, since `!pip install` resolves against the OS shell's PATH
+rather than the kernel's own environment -- this distinction doesn't
+matter in real Colab (where the shell and kernel share one environment)
+but does matter for rigorous local testing against an isolated venv, and
+`%pip` is the officially recommended kernel-aware form regardless. Each
+notebook was tested against its own fresh, disposable venv (never reusing
+an environment that had `spuriosity` already installed from a prior
+notebook's test run), registered as its own Jupyter kernel, with
+`ExecutePreprocessor.kernel_name` pinned explicitly to avoid accidentally
+executing against a stale default kernel.
