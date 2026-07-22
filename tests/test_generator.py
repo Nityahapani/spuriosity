@@ -295,10 +295,12 @@ def test_builder_call_order_does_not_affect_variable_draws():
 
 
 def test_ground_truth_records_seed_and_versions():
+    from spuriosity import __version__
+
     gen = _basic_generator(seed=123)
     _, truth = gen.generate()
     assert truth.seed == 123
-    assert truth.spuriosity_version == "0.1.0"
+    assert truth.spuriosity_version == __version__
     assert truth.numpy_version == np.__version__
 
 

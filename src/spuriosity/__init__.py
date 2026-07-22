@@ -6,7 +6,7 @@ causal inference methods.
 See docs/design_spec.md in the repository for the full design rationale.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 from spuriosity import reference
 from spuriosity.generator import PanelGenerator

@@ -8,7 +8,7 @@ wrong, the verification script — and the actual installed package — are
 the source of truth, not this prose.
 
 ```
-Verified against: spuriosity 0.1.0
+Verified against: spuriosity 0.2.0
 Last verification run: 14/14 checks passed
 ```
 

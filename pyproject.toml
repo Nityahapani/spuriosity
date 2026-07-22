@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "spuriosity"
-version = "0.1.0"
+version = "0.2.0"
 description = "Synthetic panel/time-series data with known ground truth and injectable econometric pathologies, for stress-testing ML pipelines and causal inference methods."
 readme = "README.md"
 license = { file = "LICENSE" }
